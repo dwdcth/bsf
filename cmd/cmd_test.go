@@ -64,6 +64,9 @@ func TestRootBareCodeReceive(t *testing.T) {
 	}
 
 	relayURL = rs.WebSocketURL()
+	t.Cleanup(func() {
+		relayURL = ""
+	})
 	rootCmd.SetArgs([]string{code})
 	if err := rootCmd.Execute(); err != nil {
 		t.Fatalf("root command execute error: %s", err)

@@ -315,18 +315,24 @@ func (ts *TestServer) handleWS(w http.ResponseWriter, r *http.Request) {
 
 			var nameplate int16
 			ts.mu.Lock()
-			for i := int16(1); i < math.MaxInt16; i++ {
-				mboxID := ts.nameplates[i]
-				if mboxID == "" {
-					mboxID = crypto.RandHex(20)
-
-					mbox := newMailbox()
-
-					ts.mailboxes[mboxID] = mbox
-					ts.nameplates[i] = mboxID
-					nameplate = i
-					break
+			// pick a random free nameplate so concurrent senders on
+			// different machines don't collide (sequential allocation
+			// would give them all "1")
+			for i := 0; i < 64; i++ {
+				r, err := strconv.ParseInt(crypto.RandHex(2), 16, 32)
+				if err != nil {
+					continue
 				}
+				candidate := int16(1000 + r%31768)
+				if ts.nameplates[candidate] != "" {
+					continue
+				}
+
+				mboxID := crypto.RandHex(20)
+				ts.mailboxes[mboxID] = newMailbox()
+				ts.nameplates[candidate] = mboxID
+				nameplate = candidate
+				break
 			}
 			ts.mu.Unlock()
 

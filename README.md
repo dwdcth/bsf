@@ -71,29 +71,31 @@ To enable shell completion follow the instructions from `bsf shell-completion -h
 Code completion works for both `bsf receive <TAB>` and the bare
 `bsf <TAB>` form. Nameplate completion uses the `--relay-url` relay when
 given, otherwise it queries every rendezvous server discovered on the local network
-via mDNS and only falls back to the public relay when no local server is found.
+via udp broadcast and only falls back to the public relay when no local server is found.
 
 ### Running without the public relay (LAN)
 
 The wormhole protocol always needs a rendezvous (mailbox) server for the initial handshake,
 but it does not have to be the public one. By default a send **stays entirely on the local
-network**: the sender embeds a rendezvous server, mints the code locally, and advertises
-itself via mDNS — no relay is contacted and the code never leaves the network:
+network**: the sender embeds a rendezvous server, mints the code locally, and answers
+discovery probes from the local network — no relay is contacted and the code never leaves the network:
 
 ```
 # machine A
 $ bsf send file.txt
 Send mode: local network
 On the other computer on this network, please run: bsf <code>
-Wormhole code is: 1-torpedo-newborn
+Wormhole code is: 28471-torpedo-newborn
 
-# machine B on the same LAN (auto-discovers the sender via mDNS)
-$ bsf 1-torpedo-newborn
-Rendezvous: ws://192.168.31.37:40000/ws (local network, found via mDNS)
+# machine B on the same LAN (auto-discovers the sender)
+$ bsf 28471-torpedo-newborn
+Rendezvous: ws://192.168.31.37:40000/ws (local network)
 ```
 
-Receivers browse the local network for `_bsf._tcp` services and ask each one whether it
-knows the code's nameplate, trying the next server until one does.
+Receivers find senders with a subnet broadcast probe (`bsf1 Q <nameplate>` on udp 53534);
+the machine holding that nameplate answers unicast with its address. Broadcast was chosen
+over mDNS because macOS delivers udp 5353 exclusively to the system responder, which made
+cross-machine discovery with a mac silently fail.
 
 To also let receivers **outside** the local network connect, pass `--relay` (or an
 explicit `--relay-url`): the send then runs on two rendezvous legs at once — the relay
@@ -107,11 +109,11 @@ Send mode: relay + local network
 ```
 
 For a longer-lived rendezvous server, `bsf server` runs one and also
-advertises it via mDNS:
+advertises it via udp broadcast:
 
 ```
 $ bsf server
-Rendezvous server listening on [::]:40000 (advertised via mDNS as _bsf._tcp)
+Rendezvous server listening on [::]:40000 (advertised via udp broadcast)
 Use: bsf --relay-url ws://127.0.0.1:40000/ws ...
 Use: bsf --relay-url ws://192.168.31.37:40000/ws ...
 ```
@@ -121,19 +123,18 @@ File transfers connect directly over the LAN (direct-tcp-v1 hints are exchanged 
 the public transit relay is only a fallback), and text messages only ever touch the
 rendezvous server. Note: this server is a lightweight implementation intended for
 personal/LAN use — it has no nameplate expiry or rate limiting, so don't expose it to
-the internet. mDNS discovery requires multicast to work between the two machines
-(same subnet or a multicast-forwarding network).
+the internet. Broadcast discovery requires the two machines to share a subnet.
 
 Firewall note for senders: the embedded rendezvous server tries to bind tcp port
 `40009` (falling back to a random port when several senders run on one machine), and
-mDNS itself uses udp `5353`. On machines running a firewall, allow both:
+discovery probes use udp `53534`. On machines running a firewall, allow both:
 
 ```
-ufw allow 5353/udp && ufw allow 40009/tcp     # or the firewalld equivalent
+ufw allow 53534/udp && ufw allow 40009/tcp     # or the firewalld equivalent
 ```
 
 A receiver that falls back to the public relay prints a note explaining what the
-mDNS discovery step saw, which tells you which side to fix.
+discovery step saw, which tells you which side to fix.
 
 
 ## Building the CLI tool

@@ -5,7 +5,6 @@ import (
 	"net"
 	"strconv"
 	"strings"
-	"syscall"
 	"time"
 )
 
@@ -26,11 +25,11 @@ const (
 // startBroadcastResponder answers broadcast queries for the
 // nameplates of an embedded rendezvous server listening on tcpPort,
 // from broadcastDiscoveryPort. A second process on the same host
-// simply does not answer (mDNS still covers the same-host case).
+// simply does not answer (queries also go to loopback, covering the same-host case).
 func startBroadcastResponder(ts interface {
 	Nameplates() []string
 }, tcpPort int) func() {
-	conn, err := net.ListenUDP("udp4", &net.UDPAddr{IP: net.IPv4zero, Port: broadcastDiscoveryPort})
+	conn, err := listenUDPReusePort(broadcastDiscoveryPort)
 	if err != nil {
 		return func() {}
 	}
@@ -82,28 +81,38 @@ func startBroadcastResponder(ts interface {
 
 // broadcastQueryRendezvous asks the local network(s) which rendezvous
 // server holds the given nameplate, and returns its url. An empty
-// nameplate ("*") returns the first answerer, for nameplate
-// completion.
+// nameplate ("*") matches any server.
 func broadcastQueryRendezvous(nameplate string) (string, bool) {
-	if nameplate == "" {
+	urls := broadcastQueryAllRendezvous(nameplate, false)
+	if len(urls) == 0 {
 		return "", false
+	}
+	return urls[0], true
+}
+
+// broadcastQueryAllRendezvous broadcasts a query and returns the urls
+// of every rendezvous server that answered. With collectAll false it
+// returns after the first answer.
+func broadcastQueryAllRendezvous(nameplate string, collectAll bool) []string {
+	if nameplate == "" {
+		return nil
 	}
 
 	conn, err := net.ListenUDP("udp4", &net.UDPAddr{IP: net.IPv4zero, Port: 0})
 	if err != nil {
-		return "", false
+		return nil
 	}
 	defer conn.Close()
 
 	if err := enableBroadcast(conn); err != nil {
-		return "", false
+		return nil
 	}
 
 	query := fmt.Sprintf("%s Q %s", broadcastMarker, nameplate)
-	dests := broadcastAddresses()
+	dests := queryDestinations()
 	sendAll := func() {
 		for _, addr := range dests {
-			_, _ = conn.WriteToUDP([]byte(query), &net.UDPAddr{IP: addr, Port: broadcastDiscoveryPort})
+			_, _ = conn.WriteToUDP([]byte(query), addr)
 		}
 	}
 
@@ -111,18 +120,20 @@ func broadcastQueryRendezvous(nameplate string) (string, bool) {
 	sendAll()
 	time.AfterFunc(250*time.Millisecond, sendAll)
 
+	var urls []string
+	seen := make(map[string]struct{})
 	deadline := time.Now().Add(broadcastQueryTimeout)
 	buf := make([]byte, 512)
 	for {
 		remaining := time.Until(deadline)
 		if remaining <= 0 {
-			return "", false
+			return urls
 		}
 
 		_ = conn.SetReadDeadline(deadline)
 		n, from, err := conn.ReadFromUDP(buf)
 		if err != nil {
-			return "", false
+			return urls
 		}
 
 		fields := strings.Fields(string(buf[:n]))
@@ -142,8 +153,33 @@ func broadcastQueryRendezvous(nameplate string) (string, bool) {
 		if from.IP.To4() == nil {
 			host = "[" + host + "]"
 		}
-		return fmt.Sprintf("ws://%s:%d/ws", host, port), true
+		url := fmt.Sprintf("ws://%s:%d/ws", host, port)
+		if _, dup := seen[url]; dup {
+			continue
+		}
+		seen[url] = struct{}{}
+		urls = append(urls, url)
+
+		if !collectAll {
+			return urls
+		}
 	}
+}
+
+// queryDestinations returns where discovery queries are sent: the
+// subnet broadcast of every interface, the limited broadcast address,
+// and loopback so same-host senders answer too.
+func queryDestinations() []*net.UDPAddr {
+	var dests []*net.UDPAddr
+	for _, addr := range broadcastAddresses() {
+		dests = append(dests, &net.UDPAddr{IP: addr, Port: broadcastDiscoveryPort})
+	}
+	dests = append(dests,
+		&net.UDPAddr{IP: net.IPv4bcast, Port: broadcastDiscoveryPort},
+		&net.UDPAddr{IP: net.IPv4(127, 0, 0, 1), Port: broadcastDiscoveryPort},
+	)
+
+	return dests
 }
 
 func containsNameplate(list, nameplate string) bool {
@@ -197,21 +233,4 @@ func broadcastAddresses() []net.IP {
 	}
 
 	return addrs
-}
-
-func enableBroadcast(conn *net.UDPConn) error {
-	raw, err := conn.SyscallConn()
-	if err != nil {
-		return err
-	}
-
-	var sockErr error
-	err = raw.Control(func(fd uintptr) {
-		sockErr = syscall.SetsockoptInt(int(fd), syscall.SOL_SOCKET, syscall.SO_BROADCAST, 1)
-	})
-	if err != nil {
-		return err
-	}
-
-	return sockErr
 }

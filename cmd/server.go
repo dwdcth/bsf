@@ -42,16 +42,10 @@ Senders and receivers can use this server by passing
 				bail("Failed to determine listen port: %s", err)
 			}
 
-			stopAdvert, err := advertiseRendezvous(portNum)
-			if err != nil {
-				bail("Failed to advertise via mDNS: %s", err)
-			}
-			defer stopAdvert()
-
 			stopBroadcast := startBroadcastResponder(ts, portNum)
 			defer stopBroadcast()
 
-			fmt.Printf("Rendezvous server listening on %s (advertised via mDNS %s and udp broadcast)\n", ts.Listener.Addr(), mdnsServiceType)
+			fmt.Printf("Rendezvous server listening on %s (advertised via udp broadcast)\n", ts.Listener.Addr())
 
 			// wildcard binds are reachable via loopback and every
 			// interface; an explicit bind is only reachable on that host
