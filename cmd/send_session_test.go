@@ -86,10 +86,7 @@ func TestDefaultSendIsLANOnly(t *testing.T) {
 		t.Error("default send should not report a relay leg")
 	}
 
-	found := discoverRendezvous(codeNameplate(session.code))
-	if found == "" {
-		t.Skip("mDNS multicast not available in this environment")
-	}
+	found := discoverWithRetry(t, codeNameplate(session.code))
 
 	var receiver wormhole.Client
 	receiver.RendezvousURL = found
@@ -133,10 +130,7 @@ func TestDualSendReceiverViaLAN(t *testing.T) {
 	}
 
 	// the lan leg mirrors the relay-minted code
-	found := discoverRendezvous(codeNameplate(session.code))
-	if found == "" {
-		t.Skip("mDNS multicast not available in this environment")
-	}
+	found := discoverWithRetry(t, codeNameplate(session.code))
 
 	var receiver wormhole.Client
 	receiver.RendezvousURL = found
@@ -213,10 +207,7 @@ func TestDualSendRelayUnreachableFallsBackToLAN(t *testing.T) {
 		t.Skipf("expected 1 lan-only leg after relay failure, got %d", len(session.legs))
 	}
 
-	found := discoverRendezvous(codeNameplate(session.code))
-	if found == "" {
-		t.Skip("mDNS multicast not available in this environment")
-	}
+	found := discoverWithRetry(t, codeNameplate(session.code))
 
 	var receiver wormhole.Client
 	receiver.RendezvousURL = found

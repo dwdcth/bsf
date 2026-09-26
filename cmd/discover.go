@@ -162,9 +162,10 @@ func broadcastQueryAllRendezvous(nameplate string, collectAll bool) []string {
 		}
 	}
 
-	// two passes for lossy links, within the same listen window
+	// three passes for lossy links, within the same listen window
 	sendAll()
 	time.AfterFunc(250*time.Millisecond, sendAll)
+	time.AfterFunc(500*time.Millisecond, sendAll)
 
 	var urls []string
 	seen := make(map[string]struct{})

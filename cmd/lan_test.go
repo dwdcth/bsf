@@ -2,9 +2,11 @@ package cmd
 
 import (
 	"context"
+	"errors"
 	"io"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/dwdcth/bsf/wormhole"
 	"github.com/spf13/cobra"
@@ -40,6 +42,44 @@ func TestBroadcastAddresses(t *testing.T) {
 	}
 }
 
+// retryFor calls f until it returns true or the deadline passes.
+func retryFor(d time.Duration, f func() bool) error {
+	deadline := time.Now().Add(d)
+	for !f() {
+		if time.Now().After(deadline) {
+			return errors.New("condition not met before deadline")
+		}
+		time.Sleep(500 * time.Millisecond)
+	}
+	return nil
+}
+
+func containsString(list []string, want string) bool {
+	for _, s := range list {
+		if s == want {
+			return true
+		}
+	}
+	return false
+}
+
+// discoverWithRetry retries broadcast discovery a few times; udp can
+// drop every probe on a busy ci runner.
+func discoverWithRetry(t *testing.T, nameplate string) string {
+	t.Helper()
+
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		if found := discoverRendezvous(nameplate); found != "" {
+			return found
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("broadcast discovery did not find the sender")
+		}
+		time.Sleep(500 * time.Millisecond)
+	}
+}
+
 func TestBroadcastDiscovery(t *testing.T) {
 	url, shutdown, err := lanRendezvous()
 	if err != nil {
@@ -54,10 +94,7 @@ func TestBroadcastDiscovery(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	found := discoverRendezvous(codeNameplate(code))
-	if found == "" {
-		t.Fatal("broadcast discovery did not find the sender")
-	}
+	found := discoverWithRetry(t, codeNameplate(code))
 
 	var receiver wormhole.Client
 	receiver.RendezvousURL = found
@@ -101,10 +138,7 @@ func TestBroadcastDiscoveryMultipleServers(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	found := discoverRendezvous(codeNameplate(code))
-	if found == "" {
-		t.Fatal("broadcast discovery did not find the sender")
-	}
+	found := discoverWithRetry(t, codeNameplate(code))
 
 	var receiver wormhole.Client
 	receiver.RendezvousURL = found
