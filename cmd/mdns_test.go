@@ -8,8 +8,8 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/dwdcth/bsf/wormhole"
 	"github.com/hashicorp/mdns"
-	"github.com/psanford/wormhole-william/wormhole"
 	"github.com/spf13/cobra"
 )
 

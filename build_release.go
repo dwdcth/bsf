@@ -23,7 +23,7 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/psanford/wormhole-william/version"
+	"github.com/dwdcth/bsf/version"
 )
 
 var ignoreTagMismatch = flag.Bool("ignore-tag-mismatch", false, "Don't check if current tag matches in code version")

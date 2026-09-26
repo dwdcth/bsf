@@ -15,8 +15,8 @@ import (
 	"time"
 
 	"github.com/cheggaaa/pb/v3"
+	"github.com/dwdcth/bsf/wormhole"
 	qrterminal "github.com/mdp/qrterminal/v3"
-	"github.com/psanford/wormhole-william/wormhole"
 	"github.com/spf13/cobra"
 )
 
@@ -95,6 +95,7 @@ func newClient() wormhole.Client {
 
 // sendLeg is one rendezvous leg of an in-flight send.
 type sendLeg struct {
+	via    string // "relay" or "local network", shown to the user
 	cancel context.CancelFunc
 	status chan wormhole.SendResult
 }
@@ -131,7 +132,7 @@ func startSendSession(run func(c *wormhole.Client, ctx context.Context, code str
 			relayErr = err
 		} else {
 			session.code = code
-			session.legs = append(session.legs, sendLeg{cancel: cancel, status: status})
+			session.legs = append(session.legs, sendLeg{via: "relay", cancel: cancel, status: status})
 		}
 	}
 
@@ -160,7 +161,8 @@ func startSendSession(run func(c *wormhole.Client, ctx context.Context, code str
 			return nil, err
 		}
 		session.code = code
-		session.legs = append(session.legs, sendLeg{cancel: cancel, status: status})
+		session.legs = append(session.legs, sendLeg{via: "local network", cancel: cancel, status: status})
+		session.printMode()
 
 		return session, nil
 	}
@@ -169,6 +171,7 @@ func startSendSession(run func(c *wormhole.Client, ctx context.Context, code str
 	url, shutdown, err := lanRendezvousForCode(session.code)
 	if err != nil {
 		// no usable lan interface or nameplate collision: relay-only send
+		session.printMode()
 		return session, nil
 	}
 
@@ -179,12 +182,24 @@ func startSendSession(run func(c *wormhole.Client, ctx context.Context, code str
 	if err != nil {
 		cancel()
 		shutdown()
+		session.printMode()
 		return session, nil
 	}
 	session.shutdown = shutdown
-	session.legs = append(session.legs, sendLeg{cancel: cancel, status: lanStatus})
+	session.legs = append(session.legs, sendLeg{via: "local network", cancel: cancel, status: lanStatus})
+	session.printMode()
 
 	return session, nil
+}
+
+// printMode tells the user which rendezvous legs this send runs on.
+func (s *sendSession) printMode() {
+	vias := make([]string, 0, len(s.legs))
+	for _, leg := range s.legs {
+		vias = append(vias, leg.via)
+	}
+
+	fmt.Printf("Send mode: %s\n", strings.Join(vias, " + "))
 }
 
 // relayReachable does a bounded tcp dial to a relay url. It lets an
@@ -235,6 +250,8 @@ func (s *sendSession) wait() wormhole.SendResult {
 			s.legs[i].cancel()
 		}
 	}
+
+	fmt.Printf("Receiver connected via %s\n", s.legs[done.idx].via)
 
 	return done.res
 }

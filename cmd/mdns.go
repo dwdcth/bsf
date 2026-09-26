@@ -12,11 +12,11 @@ import (
 	"strings"
 	"time"
 
+	"github.com/dwdcth/bsf/internal/crypto"
+	"github.com/dwdcth/bsf/rendezvous"
+	"github.com/dwdcth/bsf/rendezvous/rendezvousservertest"
+	"github.com/dwdcth/bsf/wormhole"
 	"github.com/hashicorp/mdns"
-	"github.com/psanford/wormhole-william/internal/crypto"
-	"github.com/psanford/wormhole-william/rendezvous"
-	"github.com/psanford/wormhole-william/rendezvous/rendezvousservertest"
-	"github.com/psanford/wormhole-william/wormhole"
 )
 
 // mdnsServiceType is the fixed mDNS service name advertised by every

@@ -4,7 +4,7 @@ import (
 	"os"
 	"strings"
 
-	"github.com/psanford/wormhole-william/wordlist"
+	"github.com/dwdcth/bsf/wordlist"
 	"github.com/spf13/cobra"
 )
 

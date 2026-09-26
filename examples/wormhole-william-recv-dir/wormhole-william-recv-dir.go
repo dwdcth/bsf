@@ -10,8 +10,8 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/dwdcth/bsf/wormhole"
 	"github.com/klauspost/compress/zip"
-	"github.com/psanford/wormhole-william/wormhole"
 )
 
 func main() {

@@ -16,9 +16,9 @@ import (
 	"sync"
 	"time"
 
+	"github.com/dwdcth/bsf/internal/crypto"
+	"github.com/dwdcth/bsf/rendezvous/internal/msgs"
 	"github.com/gorilla/websocket"
-	"github.com/psanford/wormhole-william/internal/crypto"
-	"github.com/psanford/wormhole-william/rendezvous/internal/msgs"
 )
 
 type TestServer struct {

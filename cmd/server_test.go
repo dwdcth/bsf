@@ -5,7 +5,7 @@ import (
 	"io"
 	"testing"
 
-	"github.com/psanford/wormhole-william/wormhole"
+	"github.com/dwdcth/bsf/wormhole"
 )
 
 func TestStartRendezvousServer(t *testing.T) {

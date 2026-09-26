@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/psanford/wormhole-william/wormhole"
+	"github.com/dwdcth/bsf/wormhole"
 )
 
 func TestSendSessionWaitCancelsLosers(t *testing.T) {

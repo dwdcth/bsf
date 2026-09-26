@@ -1,4 +1,4 @@
-module github.com/psanford/wormhole-william
+module github.com/dwdcth/bsf
 
 go 1.21
 

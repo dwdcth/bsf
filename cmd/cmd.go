@@ -5,7 +5,7 @@ import (
 	"os"
 	"regexp"
 
-	"github.com/psanford/wormhole-william/version"
+	"github.com/dwdcth/bsf/version"
 	"github.com/spf13/cobra"
 )
 

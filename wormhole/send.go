@@ -13,10 +13,10 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/dwdcth/bsf/internal/crypto"
+	"github.com/dwdcth/bsf/rendezvous"
+	"github.com/dwdcth/bsf/wordlist"
 	"github.com/klauspost/compress/zip"
-	"github.com/psanford/wormhole-william/internal/crypto"
-	"github.com/psanford/wormhole-william/rendezvous"
-	"github.com/psanford/wormhole-william/wordlist"
 	"golang.org/x/crypto/nacl/secretbox"
 )
 

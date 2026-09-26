@@ -1,17 +1,17 @@
-# wormhole-william
+# bsf
 
-wormhole-william is a Go (golang) implementation of [magic wormhole](https://magic-wormhole.readthedocs.io/en/latest/). It provides secure end-to-end encrypted file transfers between computers. The endpoints are connected using the same "wormhole code".
+bsf (本地收发) is a Go (golang) implementation of [magic wormhole](https://magic-wormhole.readthedocs.io/en/latest/), forked from [psanford/wormhole-william](https://github.com/psanford/wormhole-william). It provides secure end-to-end encrypted file transfers between computers. The endpoints are connected using the same "wormhole code".
 
-wormhole-william is compatible with the official [python magic wormhole cli tool](https://github.com/warner/magic-wormhole).
+bsf is compatible with the official [python magic wormhole cli tool](https://github.com/warner/magic-wormhole).
 
-Currently, wormhole-william supports:
+Currently, bsf supports:
 - sending and receiving text over the wormhole protocol
 - sending and receiving files over the transit protocol
 - sending and receiving directories over the transit protocol
 
 ## Docs
 
-https://pkg.go.dev/github.com/psanford/wormhole-william/wormhole?tab=doc
+https://pkg.go.dev/github.com/dwdcth/bsf/wormhole?tab=doc
 
 ## CLI Usage
 
@@ -65,7 +65,7 @@ Global Flags:
 
 ### CLI tab completion
 
-The wormhole-william CLI supports shell completion, including completing the receive code.
+The bsf CLI supports shell completion, including completing the receive code.
 To enable shell completion follow the instructions from `bsf shell-completion -h`.
 
 Code completion works for both `bsf receive <TAB>` and the bare
@@ -128,7 +128,7 @@ the internet. mDNS discovery requires multicast to work between the two machines
 
 ## Building the CLI tool
 
-wormhole-william uses go modules so it requires a version of the go tool chain >= 1.11. If you are using a version of go that supports modules you can clone the repo outside of your GOPATH and do a `go build` in the top level directory.
+bsf uses go modules so it requires a version of the go tool chain >= 1.11. If you are using a version of go that supports modules you can clone the repo outside of your GOPATH and do a `go build` in the top level directory.
 
 To build a stripped release binary named `bsf` run:
 
@@ -139,10 +139,10 @@ go build -trimpath -ldflags "-s -w" -o bsf .
 To just install via the go tool run:
 
 ```
-go install github.com/psanford/wormhole-william@latest
+go install github.com/dwdcth/bsf@latest
 ```
 
-Note: `go install` names the binary after the module (`wormhole-william`); rename or symlink it to `bsf`, or use the release binaries (`bsf-<os>-<arch>`), which are built stripped of debug symbols.
+The installed binary is named `bsf`. Release binaries (`bsf-<os>-<arch>`) are built stripped of debug symbols.
 
 ## API Usage
 
@@ -157,7 +157,7 @@ import (
 	"io/ioutil"
 	"log"
 
-	"github.com/psanford/wormhole-william/wormhole"
+	"github.com/dwdcth/bsf/wormhole"
 )
 
 func sendText() {
@@ -206,7 +206,7 @@ func recvText(code string) {
 }
 ```
 
-See the [cli tool](https://github.com/psanford/wormhole-william/tree/master/cmd) and [examples](https://github.com/psanford/wormhole-william/tree/master/examples) directory for working examples of how to use the API to send and receive text, files and directories.
+See the [cli tool](https://github.com/dwdcth/bsf/tree/master/cmd) and [examples](https://github.com/dwdcth/bsf/tree/master/examples) directory for working examples of how to use the API to send and receive text, files and directories.
 
 ## Third Party Users of Wormhole William
 

@@ -5,8 +5,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/psanford/wormhole-william/rendezvous/rendezvousservertest"
-	"github.com/psanford/wormhole-william/wormhole"
+	"github.com/dwdcth/bsf/rendezvous/rendezvousservertest"
+	"github.com/dwdcth/bsf/wormhole"
 )
 
 func TestLooksLikeRecvCode(t *testing.T) {

@@ -12,8 +12,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/psanford/wormhole-william/rendezvous/rendezvousservertest"
-	"github.com/psanford/wormhole-william/wormhole"
+	"github.com/dwdcth/bsf/rendezvous/rendezvousservertest"
+	"github.com/dwdcth/bsf/wormhole"
 	"golang.org/x/term"
 )
 

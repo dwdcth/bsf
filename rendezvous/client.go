@@ -10,9 +10,9 @@ import (
 	"sync"
 	"sync/atomic"
 
-	"github.com/psanford/wormhole-william/internal/crypto"
-	"github.com/psanford/wormhole-william/rendezvous/internal/msgs"
-	"github.com/psanford/wormhole-william/version"
+	"github.com/dwdcth/bsf/internal/crypto"
+	"github.com/dwdcth/bsf/rendezvous/internal/msgs"
+	"github.com/dwdcth/bsf/version"
 	"nhooyr.io/websocket"
 	"nhooyr.io/websocket/wsjson"
 )

@@ -10,7 +10,7 @@ import (
 	"strings"
 	"syscall"
 
-	"github.com/psanford/wormhole-william/rendezvous/rendezvousservertest"
+	"github.com/dwdcth/bsf/rendezvous/rendezvousservertest"
 	"github.com/spf13/cobra"
 )
 

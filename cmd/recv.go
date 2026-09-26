@@ -12,8 +12,8 @@ import (
 	"strings"
 
 	"github.com/cheggaaa/pb/v3"
+	"github.com/dwdcth/bsf/wormhole"
 	"github.com/klauspost/compress/zip"
-	"github.com/psanford/wormhole-william/wormhole"
 	"github.com/spf13/cobra"
 )
 
@@ -57,10 +57,13 @@ func recvAction(cmd *cobra.Command, args []string) {
 
 	// no explicit relay: look for a rendezvous server on the local
 	// network that knows this code before falling back to the public one
-	if relayURL == "" {
-		if url := discoverRendezvous(codeNameplate(code)); url != "" {
-			c.RendezvousURL = url
-		}
+	if relayURL != "" {
+		fmt.Printf("Rendezvous: %s (relay)\n", relayURL)
+	} else if url := discoverRendezvous(codeNameplate(code)); url != "" {
+		c.RendezvousURL = url
+		fmt.Printf("Rendezvous: %s (local network, found via mDNS)\n", url)
+	} else {
+		fmt.Printf("Rendezvous: %s (public relay)\n", wormhole.DefaultRendezvousURL)
 	}
 
 	if verify {

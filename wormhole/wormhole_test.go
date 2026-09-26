@@ -17,10 +17,10 @@ import (
 	"testing"
 	"time"
 
+	"github.com/dwdcth/bsf/internal/crypto"
+	"github.com/dwdcth/bsf/rendezvous"
+	"github.com/dwdcth/bsf/rendezvous/rendezvousservertest"
 	"github.com/klauspost/compress/zip"
-	"github.com/psanford/wormhole-william/internal/crypto"
-	"github.com/psanford/wormhole-william/rendezvous"
-	"github.com/psanford/wormhole-william/rendezvous/rendezvousservertest"
 )
 
 func TestWormholeSendRecvText(t *testing.T) {
