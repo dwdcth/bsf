@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	"github.com/dwdcth/bsf/rendezvous/rendezvousservertest"
+	"github.com/klauspost/compress/zip"
 )
 
 func rendezvousServertest(t *testing.T) *rendezvousservertest.TestServer {
@@ -174,6 +175,91 @@ func TestSingleStreamFallbackStillWorks(t *testing.T) {
 	}
 	if !bytes.Equal(body, payload) {
 		t.Fatal("legacy read content mismatch")
+	}
+
+	res := <-statusCh
+	if !res.OK {
+		t.Fatalf("send failed: %s", res.Error)
+	}
+}
+
+func TestParallelSendRecvDirectory(t *testing.T) {
+	rs := rendezvousServertest(t)
+	url := rs.WebSocketURL()
+
+	entries := []DirectoryEntry{
+		{
+			Path: "album/photos/one.bin",
+			Mode: 0o644,
+			Reader: func() (io.ReadCloser, error) {
+				return io.NopCloser(bytes.NewReader(bytes.Repeat([]byte{1}, 512*1024))), nil
+			},
+		},
+		{
+			Path: "album/photos/two.bin",
+			Mode: 0o644,
+			Reader: func() (io.ReadCloser, error) {
+				return io.NopCloser(bytes.NewReader(bytes.Repeat([]byte{2}, 512*1024))), nil
+			},
+		},
+	}
+
+	var sender Client
+	sender.RendezvousURL = url
+	code, statusCh, err := sender.SendDirectory(context.Background(), "album", entries, WithParallel(4))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var receiver Client
+	receiver.RendezvousURL = url
+	receiver.ParallelStreams = 4
+	msg, err := receiver.Receive(context.Background(), code)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if msg.Type != TransferDirectory {
+		t.Fatalf("expected directory offer, got %s", msg.Type)
+	}
+	if msg.ParallelStreams() != 4 {
+		t.Fatalf("expected 4 parallel streams, got %d", msg.ParallelStreams())
+	}
+
+	dest := &bytesBufferAt{}
+	if err := msg.ReceiveFileInto(context.Background(), dest, nil); err != nil {
+		t.Fatal(err)
+	}
+
+	zr, err := zip.NewReader(bytes.NewReader(dest.Bytes()), int64(dest.Len()))
+	if err != nil {
+		t.Fatalf("received zip is not readable: %s", err)
+	}
+	if len(zr.File) != len(entries) {
+		t.Fatalf("expected %d files in zip, got %d", len(entries), len(zr.File))
+	}
+	for _, zf := range zr.File {
+		rc, err := zf.Open()
+		if err != nil {
+			t.Fatal(err)
+		}
+		body, err := io.ReadAll(rc)
+		rc.Close()
+		if err != nil {
+			t.Fatal(err)
+		}
+		var want byte
+		switch zf.Name {
+		case "photos/one.bin":
+			want = 1
+		case "photos/two.bin":
+			want = 2
+		default:
+			t.Fatalf("unexpected zip entry %q", zf.Name)
+		}
+		if len(body) != 512*1024 || body[0] != want || body[len(body)-1] != want {
+			t.Fatalf("zip entry %q content mismatch (%d bytes)", zf.Name, len(body))
+		}
 	}
 
 	res := <-statusCh

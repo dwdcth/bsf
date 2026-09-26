@@ -317,7 +317,10 @@ func (c *Client) sendFileDirectory(ctx context.Context, offer *offerMsg, r io.Re
 			return
 		}
 
-		if offer.File != nil && options.parallel > 1 {
+		// directories travel as a zip tmpfile, which is an io.ReaderAt,
+		// so they can use the parallel streams just like plain files
+		parallelPlanned := options.parallel > 1 && (offer.File != nil || offer.Directory != nil)
+		if parallelPlanned {
 			transit.Parallel = options.parallel
 		}
 
@@ -367,7 +370,7 @@ func (c *Client) sendFileDirectory(ctx context.Context, offer *offerMsg, r io.Re
 		}
 
 		var conn net.Conn
-		if offer.File != nil && options.parallel > 1 && recvTransit.Parallel > 1 {
+		if parallelPlanned && recvTransit.Parallel > 1 {
 			if readerAt, ok := r.(io.ReaderAt); ok {
 				conns, err := transport.acceptConnections(ctx, options.parallel)
 				if err != nil {
@@ -376,7 +379,13 @@ func (c *Client) sendFileDirectory(ctx context.Context, offer *offerMsg, r io.Re
 				}
 
 				if len(conns) == options.parallel {
-					err := sendParallelFile(ctx, collector, clientProto, transport, transitKey, offer.File.FileSize, readerAt, conns, options.progressFunc)
+					var totalSize int64
+					if offer.File != nil {
+						totalSize = offer.File.FileSize
+					} else {
+						totalSize = offer.Directory.ZipSize
+					}
+					err := sendParallelFile(ctx, collector, clientProto, transport, transitKey, totalSize, readerAt, conns, options.progressFunc)
 					if err != nil {
 						sendErr(err)
 					} else {

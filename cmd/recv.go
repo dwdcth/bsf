@@ -228,12 +228,45 @@ func recvAction(cmd *cobra.Command, args []string) {
 				defer tmpFile.Close()
 				defer os.Remove(tmpFile.Name())
 
-				proxyReader := pbProxyReader(msg, msg.TransferBytes64)
+				var n int64
+				if msg.ParallelStreams() > 1 {
+					// multi-stream transfer with automatic resume:
+					// progress comes from a callback instead of the
+					// io.Reader proxy
+					var bar *pb.ProgressBar
+					progressFn := func(received, total int64) {}
+					if !hideProgressBar {
+						bar = pb.Full.Start64(msg.TransferBytes64)
+						bar.Set(pb.Bytes, true)
+						bar.Set(pb.SIBytesPrefix, true)
+						progressFn = func(received, total int64) {
+							n = received
+							bar.SetCurrent(received)
+						}
+					}
 
-				n, err := io.Copy(tmpFile, proxyReader)
-				if err != nil {
-					os.Remove(tmpFile.Name())
-					bail("Receive file error: %s", err)
+					err = msg.ReceiveFileInto(ctx, tmpFile, progressFn)
+					if bar != nil {
+						bar.Finish()
+					}
+					if err != nil {
+						os.Remove(tmpFile.Name())
+						bail("Receive file error: %s", err)
+					}
+					if n == 0 {
+						n = msg.TransferBytes64
+					}
+				} else {
+					proxyReader := pbProxyReader(msg, msg.TransferBytes64)
+
+					copied, err := io.Copy(tmpFile, proxyReader)
+					if err != nil {
+						os.Remove(tmpFile.Name())
+						bail("Receive file error: %s", err)
+					}
+
+					proxyReader.Close()
+					n = copied
 				}
 
 				zr, err := zip.NewReader(tmpFile, n)
@@ -279,8 +312,6 @@ func recvAction(cmd *cobra.Command, args []string) {
 
 					rc.Close()
 				}
-
-				proxyReader.Close()
 			}
 		}
 	}

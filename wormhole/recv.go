@@ -167,7 +167,11 @@ func (c *Client) Receive(ctx context.Context, code string) (fr *IncomingMessage,
 	// announce that we will use parallel streams, so the sender knows
 	// our N connections are streams and not racing dial junk; the
 	// count is the sender's offer, which is what it will accept
-	if c.ParallelStreams > 1 && gotTransitMsg.Parallel > 1 && fr.Type == TransferFile {
+	// (directories are a zip byte stream, so they stream in parallel
+	// exactly like files)
+	parallelAccept := c.ParallelStreams > 1 && gotTransitMsg.Parallel > 1 &&
+		(fr.Type == TransferFile || fr.Type == TransferDirectory)
+	if parallelAccept {
 		transitMsg.Parallel = gotTransitMsg.Parallel
 	}
 
@@ -178,7 +182,7 @@ func (c *Client) Receive(ctx context.Context, code string) (fr *IncomingMessage,
 		return nil, err
 	}
 
-	if c.ParallelStreams > 1 && gotTransitMsg.Parallel > 1 && fr.Type == TransferFile {
+	if parallelAccept {
 		fr.parallel = &parallelReceive{
 			clientProto: clientProto,
 			transport:   transport,
