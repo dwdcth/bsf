@@ -10,6 +10,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/dwdcth/bsf/internal/crypto"
@@ -97,6 +98,32 @@ func advertisedRendezvous(ts *rendezvousservertest.TestServer) (string, func(), 
 	return fmt.Sprintf("ws://127.0.0.1:%d/ws", port), shutdown, nil
 }
 
+// multicastInterfaces returns every interface mDNS traffic should run
+// on: all up multicast-capable interfaces plus loopback. Using all of
+// them matters on multi-homed hosts (docker bridges, vpns), where the
+// system's default multicast interface is often not the physical
+// network the peers are on.
+func multicastInterfaces() []*net.Interface {
+	ifaces, err := net.Interfaces()
+	if err != nil {
+		return nil
+	}
+
+	var out []*net.Interface
+	for _, iface := range ifaces {
+		if iface.Flags&net.FlagUp == 0 {
+			continue
+		}
+		if iface.Flags&net.FlagLoopback == 0 && iface.Flags&net.FlagMulticast == 0 {
+			continue
+		}
+		iface := iface
+		out = append(out, &iface)
+	}
+
+	return out
+}
+
 // advertiseRendezvous announces a rendezvous server on every local
 // network interface. All lan ips are listed in the TXT record so
 // receivers with a different view of the network can try them all.
@@ -119,18 +146,30 @@ func advertiseRendezvous(port int) (func(), error) {
 		txt = append(txt, "ip="+ip.String())
 	}
 
-	svc, err := mdns.NewMDNSService(instance, mdnsServiceType, "", instance+".local.", port, ips, txt)
-	if err != nil {
-		return nil, err
+	// one responder per interface: a single responder would only join
+	// the multicast group on the system default interface
+	var servers []*mdns.Server
+	for _, iface := range multicastInterfaces() {
+		svc, err := mdns.NewMDNSService(instance, mdnsServiceType, "", instance+".local.", port, ips, txt)
+		if err != nil {
+			continue
+		}
+
+		srv, err := mdns.NewServer(&mdns.Config{Zone: svc, Iface: iface, Logger: mdnsQuietLogger})
+		if err != nil {
+			continue
+		}
+		servers = append(servers, srv)
 	}
 
-	srv, err := mdns.NewServer(&mdns.Config{Zone: svc, Logger: mdnsQuietLogger})
-	if err != nil {
-		return nil, err
+	if len(servers) == 0 {
+		return nil, fmt.Errorf("failed to start mDNS responder on any interface")
 	}
 
 	return func() {
-		srv.Shutdown()
+		for _, srv := range servers {
+			srv.Shutdown()
+		}
 	}, nil
 }
 
@@ -152,35 +191,65 @@ func discoverRendezvous(nameplate string) string {
 }
 
 // browseRendezvousURLs returns the urls of every rendezvous server
-// advertised on the local network via mDNS, deduplicated.
+// advertised on the local network via mDNS, deduplicated. The query
+// runs once per network interface in parallel, and is retried once
+// when the first round finds nothing (mDNS queries are single-shot
+// and easily lost on wireless links).
 func browseRendezvousURLs() []string {
-	entries := make(chan *mdns.ServiceEntry, 16)
-	params := mdns.DefaultParams(mdnsServiceType)
-	params.Timeout = mdnsQueryTimeout
-	params.Entries = entries
-	params.Logger = mdnsQuietLogger
-
-	if err := mdns.Query(params); err != nil {
-		return nil
+	urls := browseRendezvousURLsOnce()
+	if len(urls) > 0 {
+		return urls
 	}
 
-	seen := make(map[string]struct{})
-	var urls []string
-drain:
-	for {
-		select {
-		case e := <-entries:
-			for _, url := range entryURLs(e) {
-				if _, dup := seen[url]; dup {
-					continue
-				}
-				seen[url] = struct{}{}
-				urls = append(urls, url)
+	return browseRendezvousURLsOnce()
+}
+
+func browseRendezvousURLsOnce() []string {
+	var (
+		mu   sync.Mutex
+		seen = make(map[string]struct{})
+		wg   sync.WaitGroup
+	)
+
+	for _, iface := range multicastInterfaces() {
+		wg.Add(1)
+		go func(iface *net.Interface) {
+			defer wg.Done()
+
+			entries := make(chan *mdns.ServiceEntry, 16)
+			params := mdns.DefaultParams(mdnsServiceType)
+			params.Timeout = mdnsQueryTimeout
+			params.Entries = entries
+			params.Logger = mdnsQuietLogger
+			params.Interface = iface
+
+			if err := mdns.Query(params); err != nil {
+				return
 			}
-		default:
-			break drain
-		}
+
+		drain:
+			for {
+				select {
+				case e := <-entries:
+					for _, url := range entryURLs(e) {
+						mu.Lock()
+						seen[url] = struct{}{}
+						mu.Unlock()
+					}
+				default:
+					break drain
+				}
+			}
+		}(iface)
 	}
+
+	wg.Wait()
+
+	urls := make([]string, 0, len(seen))
+	for url := range seen {
+		urls = append(urls, url)
+	}
+	sort.Strings(urls)
 
 	return urls
 }
