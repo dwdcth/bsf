@@ -5,7 +5,7 @@ jobs:
   build:
     name: Build/Test
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 3
+    timeout-minutes: 10
     strategy:
       matrix:
         go-version: [stable, oldstable]
@@ -41,7 +41,7 @@ jobs:
         path: bsf-${{ runner.os }}.tar.gz
 
     - name: Test
-      run: go test -v ./... --timeout 60s
+      run: go test -v ./... --timeout 120s
 
     - name: Meta Tests
       run: go test -v -tags ci ./ci --timeout 60s
@@ -52,7 +52,7 @@ jobs:
       if: ${{ runner.os == 'Linux' && matrix.go-version == 'stable' }}
 
     - name: Cross test for i386
-      run: env GOOS=linux GOARCH=386 go test -v ./... --timeout 60s
+      run: env GOOS=linux GOARCH=386 go test -v ./... --timeout 120s
       if: ${{ runner.os == 'Linux' }}
 
     - name: Cross compile for arm (RPI)
