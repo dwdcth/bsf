@@ -1,15 +1,10 @@
 package cmd
 
 import (
-	"context"
 	"os"
 	"strings"
-	"time"
 
-	"github.com/psanford/wormhole-william/internal/crypto"
-	"github.com/psanford/wormhole-william/rendezvous"
 	"github.com/psanford/wormhole-william/wordlist"
-	"github.com/psanford/wormhole-william/wormhole"
 	"github.com/spf13/cobra"
 )
 
@@ -21,13 +16,13 @@ func completionCommand() *cobra.Command {
 
 Bash:
 
-  $ source <(wormhole-william shell-completion bash)
+  $ source <(bsf shell-completion bash)
 
   # To configure your bash shell to load completions for each session add to your bashrc
 
 # ~/.bashrc or ~/.profile
-if which wormhole-william &>/dev/null ; then
-  . <(wormhole-william shell-completion bash)
+if which bsf &>/dev/null ; then
+  . <(bsf shell-completion bash)
 fi
 
 Zsh:
@@ -38,23 +33,23 @@ Zsh:
   $ echo "autoload -U compinit; compinit" >> ~/.zshrc
 
   # To load completions for each session, execute once:
-  $ wormhole-william shell-completion zsh > "${fpath[1]}/_wormhole-william"
+  $ bsf shell-completion zsh > "${fpath[1]}/_bsf"
 
   # You will need to start a new shell for this setup to take effect.
 
 fish:
 
-  $ wormhole-william shell-completion fish | source
+  $ bsf shell-completion fish | source
 
   # To load completions for each session, execute once:
-  $ wormhole-william shell-completion fish > ~/.config/fish/completions/wormhole-william.fish
+  $ bsf shell-completion fish > ~/.config/fish/completions/bsf.fish
 
 PowerShell:
 
-  PS> wormhole-william shell-completion powershell | Out-String | Invoke-Expression
+  PS> bsf shell-completion powershell | Out-String | Invoke-Expression
 
   # To load completions for every new session, run:
-  PS> wormhole-william shell-completion powershell > wormhole-william.ps1
+  PS> bsf shell-completion powershell > bsf.ps1
   # and source this file from your PowerShell profile.
 `,
 		DisableFlagsInUseLine: true,
@@ -121,25 +116,4 @@ func recvCodeCompletion(cmd *cobra.Command, args []string, toComplete string) ([
 	}
 
 	return candidates, flags
-}
-
-func activeNameplates() ([]string, error) {
-	url := wormhole.DefaultRendezvousURL
-	sideID := crypto.RandSideID()
-	appID := wormhole.WormholeCLIAppID
-
-	ctx, cancel := context.WithTimeout(context.Background(), 4*time.Second)
-	defer cancel()
-
-	client := rendezvous.NewClient(url, sideID, appID)
-
-	mood := rendezvous.Happy
-	defer client.Close(ctx, mood)
-
-	_, err := client.Connect(ctx)
-	if err != nil {
-		return nil, err
-	}
-
-	return client.ListNameplates(ctx)
 }

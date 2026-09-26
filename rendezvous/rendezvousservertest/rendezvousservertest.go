@@ -43,6 +43,49 @@ func NewServer() *TestServer {
 	return ts
 }
 
+// ReserveNameplate maps a nameplate to a fresh mailbox without claiming
+// it. It is used when embedding the server to mirror a code that was
+// already minted on another rendezvous server, so receivers can use the
+// same code against either server.
+func (ts *TestServer) ReserveNameplate(nameplate int) error {
+	if nameplate < 1 || nameplate > math.MaxInt16 {
+		return fmt.Errorf("nameplate %d out of range", nameplate)
+	}
+
+	ts.mu.Lock()
+	defer ts.mu.Unlock()
+
+	if ts.nameplates[int16(nameplate)] != "" {
+		return fmt.Errorf("nameplate %d already in use", nameplate)
+	}
+
+	mboxID := crypto.RandHex(20)
+	ts.mailboxes[mboxID] = newMailbox()
+	ts.nameplates[int16(nameplate)] = mboxID
+
+	return nil
+}
+
+// NewServerOn is like NewServer but listens on an existing listener,
+// which allows binding a non-loopback interface, for example to serve
+// a local network.
+func NewServerOn(l net.Listener) *TestServer {
+	ts := &TestServer{
+		mailboxes:  make(map[string]*mailbox),
+		nameplates: make(map[int16]string),
+		agents:     [][]string{},
+	}
+
+	smux := http.NewServeMux()
+	smux.HandleFunc("/ws", ts.handleWS)
+
+	ts.Server = httptest.NewUnstartedServer(smux)
+	ts.Server.Listener = l
+	ts.Server.Start()
+
+	return ts
+}
+
 func (ts *TestServer) Agents() [][]string {
 	ts.mu.Lock()
 	defer ts.mu.Unlock()

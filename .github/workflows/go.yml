@@ -24,6 +24,19 @@ jobs:
     - name: Build
       run: go build -v ./...
 
+    - name: Build stripped binary (bsf)
+      run: go build -trimpath -ldflags "-s -w" -o bsf${{ runner.os == 'Windows' && '.exe' || '' }} .
+
+    - name: Show binary size
+      run: ls -lh bsf
+      if: ${{ runner.os == 'Linux' }}
+
+    - name: Upload binary
+      uses: actions/upload-artifact@v4
+      with:
+        name: bsf-${{ matrix.go-version }}-${{ runner.os }}
+        path: bsf*
+
     - name: Test
       run: go test -v ./... --timeout 60s
 

@@ -7,9 +7,12 @@ import (
 	"io"
 	"io/ioutil"
 	"log"
+	"net"
+	neturl "net/url"
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/cheggaaa/pb/v3"
 	qrterminal "github.com/mdp/qrterminal/v3"
@@ -18,10 +21,12 @@ import (
 )
 
 var (
-	codeLen      int
-	codeFlag     string
-	sendTextFlag string
-	showQRCode   bool
+	codeLen          int
+	codeFlag         string
+	sendTextFlag     string
+	showQRCode       bool
+	disableClipboard bool
+	lanMode          bool
 )
 
 func sendCommand() *cobra.Command {
@@ -57,6 +62,8 @@ func sendCommand() *cobra.Command {
 	cmd.Flags().StringVar(&sendTextFlag, "text", "", "text message to send, instead of a file.\nUse '-' to read from stdin")
 	cmd.Flags().BoolVar(&hideProgressBar, "hide-progress", false, "suppress progress-bar display")
 	cmd.Flags().BoolVar(&showQRCode, "qr", false, "display code as QR code (experimental)")
+	cmd.Flags().BoolVar(&disableClipboard, "disable-clipboard", false, "do not copy the wormhole code to the system clipboard")
+	cmd.Flags().BoolVar(&lanMode, "lan", false, "send only via an embedded mDNS-advertised rendezvous server on the local network, skipping the relay")
 
 	return &cmd
 }
@@ -86,9 +93,155 @@ func newClient() wormhole.Client {
 	return c
 }
 
+// sendLeg is one rendezvous leg of an in-flight send.
+type sendLeg struct {
+	cancel context.CancelFunc
+	status chan wormhole.SendResult
+}
+
+// sendSession is a single send racing on one or two rendezvous legs
+// that all share the same wormhole code.
+type sendSession struct {
+	code     string
+	legs     []sendLeg
+	shutdown func()
+}
+
+// startSendSession runs a send on the relay (the one given by
+// --relay-url, or the public one) and, in parallel, on an embedded
+// mDNS-advertised rendezvous server on the local network, mirroring the
+// same code on both: whichever receiver shows up first wins and the
+// other leg is cancelled. With --lan the relay is skipped entirely, and
+// when the relay is unreachable the send falls back to the embedded
+// server alone.
+func startSendSession(run func(c *wormhole.Client, ctx context.Context, code string) (string, chan wormhole.SendResult, error)) (*sendSession, error) {
+	session := &sendSession{shutdown: func() {}}
+
+	var relayErr error
+	relayLegURL := relayURL
+	if relayLegURL == "" {
+		relayLegURL = wormhole.DefaultRendezvousURL
+	}
+	if !lanMode && relayReachable(relayLegURL) {
+		ctx, cancel := context.WithCancel(context.Background())
+		c := newClient()
+		code, status, err := run(&c, ctx, codeFlag)
+		if err != nil {
+			cancel()
+			relayErr = err
+		} else {
+			session.code = code
+			session.legs = append(session.legs, sendLeg{cancel: cancel, status: status})
+		}
+	}
+
+	if session.code == "" {
+		// no relay leg (--lan, or the relay was unreachable): mint the
+		// code on an embedded server
+		url, shutdown, err := lanRendezvous()
+		if err != nil {
+			if relayErr != nil {
+				return nil, fmt.Errorf("relay: %s; lan: %s", relayErr, err)
+			}
+			return nil, err
+		}
+		session.shutdown = shutdown
+
+		ctx, cancel := context.WithCancel(context.Background())
+		c := newClient()
+		c.RendezvousURL = url
+		code, status, err := run(&c, ctx, codeFlag)
+		if err != nil {
+			cancel()
+			shutdown()
+			if relayErr != nil {
+				return nil, fmt.Errorf("relay: %s; lan: %s", relayErr, err)
+			}
+			return nil, err
+		}
+		session.code = code
+		session.legs = append(session.legs, sendLeg{cancel: cancel, status: status})
+
+		return session, nil
+	}
+
+	// mirror the relay-minted code on an embedded lan server
+	url, shutdown, err := lanRendezvousForCode(session.code)
+	if err != nil {
+		// no usable lan interface or nameplate collision: relay-only send
+		return session, nil
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	c := newClient()
+	c.RendezvousURL = url
+	_, lanStatus, err := run(&c, ctx, session.code)
+	if err != nil {
+		cancel()
+		shutdown()
+		return session, nil
+	}
+	session.shutdown = shutdown
+	session.legs = append(session.legs, sendLeg{cancel: cancel, status: lanStatus})
+
+	return session, nil
+}
+
+// relayReachable does a bounded tcp dial to a relay url. It lets an
+// unreachable relay fail over to lan-only mode in seconds instead of
+// hanging on the os-level connect timeout, which can take half a minute
+// on networks that blackhole outgoing traffic.
+func relayReachable(url string) bool {
+	u, err := neturl.Parse(url)
+	if err != nil {
+		return false
+	}
+
+	host := u.Host
+	if _, _, err := net.SplitHostPort(host); err != nil {
+		defaultPort := "80"
+		if u.Scheme == "wss" || u.Scheme == "https" {
+			defaultPort = "443"
+		}
+		host = net.JoinHostPort(host, defaultPort)
+	}
+
+	conn, err := net.DialTimeout("tcp", host, 3*time.Second)
+	if err != nil {
+		return false
+	}
+
+	return conn.Close() == nil
+}
+
+// wait returns the result of the first leg to complete and cancels the
+// remaining legs.
+func (s *sendSession) wait() wormhole.SendResult {
+	type legResult struct {
+		idx int
+		res wormhole.SendResult
+	}
+
+	merged := make(chan legResult, len(s.legs))
+	for i := range s.legs {
+		go func(i int) {
+			merged <- legResult{idx: i, res: <-s.legs[i].status}
+		}(i)
+	}
+
+	done := <-merged
+	for i := range s.legs {
+		if i != done.idx {
+			s.legs[i].cancel()
+		}
+	}
+
+	return done.res
+}
+
 func printInstructions(code string) {
 	mwCmd := "wormhole receive"
-	wwCmd := "wormhole-william recv"
+	wwCmd := "bsf recv"
 
 	if verify {
 		mwCmd = mwCmd + " --verify"
@@ -97,6 +250,14 @@ func printInstructions(code string) {
 
 	fmt.Printf("On the other computer, please run: %s (or %s)\n", mwCmd, wwCmd)
 	fmt.Printf("Wormhole code is: %s\n", code)
+
+	if !disableClipboard {
+		if copyViaHelper(code) {
+			fmt.Println("Code copied to clipboard")
+		} else if osc52Copy(code) {
+			fmt.Println("Code copied to clipboard (OSC 52)")
+		}
+	}
 
 	if showQRCode {
 		url := relayURL
@@ -114,15 +275,9 @@ func sendFile(filename string) {
 		bail("Failed to open %s: %s", filename, err)
 	}
 
-	c := newClient()
-
-	ctx := context.Background()
-
 	var bar *pb.ProgressBar
 
-	args := []wormhole.SendOption{
-		wormhole.WithCode(codeFlag),
-	}
+	args := []wormhole.SendOption{}
 
 	if !hideProgressBar {
 		args = append(args, wormhole.WithProgress(func(sentBytes int64, totalBytes int64) {
@@ -139,14 +294,21 @@ func sendFile(filename string) {
 		}))
 	}
 
-	code, status, err := c.SendFile(ctx, filepath.Base(filename), f, args...)
+	session, err := startSendSession(func(c *wormhole.Client, ctx context.Context, code string) (string, chan wormhole.SendResult, error) {
+		opts := args
+		if code != "" {
+			opts = append(opts, wormhole.WithCode(code))
+		}
+		return c.SendFile(ctx, filepath.Base(filename), f, opts...)
+	})
 	if err != nil {
 		bail("Error sending message: %s", err)
 	}
+	defer session.shutdown()
 
-	printInstructions(code)
+	printInstructions(session.code)
 
-	s := <-status
+	s := session.wait()
 
 	if s.OK {
 		fmt.Println("file sent")
@@ -193,17 +355,21 @@ func sendDir(dirpath string) {
 		return nil
 	})
 
-	c := newClient()
-
-	ctx := context.Background()
-	code, status, err := c.SendDirectory(ctx, dirname, entries, wormhole.WithCode(codeFlag))
+	session, err := startSendSession(func(c *wormhole.Client, ctx context.Context, code string) (string, chan wormhole.SendResult, error) {
+		opts := []wormhole.SendOption{}
+		if code != "" {
+			opts = append(opts, wormhole.WithCode(code))
+		}
+		return c.SendDirectory(ctx, dirname, entries, opts...)
+	})
 	if err != nil {
 		log.Fatal(err)
 	}
+	defer session.shutdown()
 
-	printInstructions(code)
+	printInstructions(session.code)
 
-	s := <-status
+	s := session.wait()
 
 	if s.OK {
 		fmt.Println("directory sent")
@@ -213,8 +379,6 @@ func sendDir(dirpath string) {
 }
 
 func sendText() {
-	c := newClient()
-
 	var msg string
 	if sendTextFlag == "-" {
 		data, err := ioutil.ReadAll(os.Stdin)
@@ -231,15 +395,21 @@ func sendText() {
 		msg = strings.TrimSpace(msg)
 	}
 
-	ctx := context.Background()
-	code, status, err := c.SendText(ctx, msg, wormhole.WithCode(codeFlag))
+	session, err := startSendSession(func(c *wormhole.Client, ctx context.Context, code string) (string, chan wormhole.SendResult, error) {
+		opts := []wormhole.SendOption{}
+		if code != "" {
+			opts = append(opts, wormhole.WithCode(code))
+		}
+		return c.SendText(ctx, msg, opts...)
+	})
 	if err != nil {
 		log.Fatal(err)
 	}
+	defer session.shutdown()
 
-	printInstructions(code)
+	printInstructions(session.code)
 
-	s := <-status
+	s := session.wait()
 
 	if s.Error != nil {
 		log.Fatalf("Send error: %s", s.Error)

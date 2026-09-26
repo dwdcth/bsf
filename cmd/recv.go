@@ -55,6 +55,14 @@ func recvAction(cmd *cobra.Command, args []string) {
 		code = strings.TrimSpace(line)
 	}
 
+	// no explicit relay: look for a rendezvous server on the local
+	// network that knows this code before falling back to the public one
+	if relayURL == "" {
+		if url := discoverRendezvous(codeNameplate(code)); url != "" {
+			c.RendezvousURL = url
+		}
+	}
+
 	if verify {
 		c.VerifierOk = func(code string) bool {
 			fmt.Printf("Verifier %s.\n", code)

@@ -36,7 +36,7 @@ func main() {
 	os.MkdirAll("release", 0777)
 
 	for _, t := range targets {
-		cmd := exec.Command("go", "build", "-trimpath", "-o", filepath.Join("release", t.binaryName()))
+		cmd := exec.Command("go", "build", "-trimpath", "-ldflags", "-s -w", "-o", filepath.Join("release", t.binaryName()))
 		env := []string{"GOOS=" + t.goos, "GOARCH=" + t.garch, "GO111MODULE=on"}
 		if t.goarm != "" {
 			env = append(env, "GOARM="+t.goarm)
@@ -82,7 +82,7 @@ func (t *target) binaryName() string {
 		ext = ".exe"
 	}
 
-	tmpl := "wormhole-william-%s-%s%s%s"
+	tmpl := "bsf-%s-%s%s%s"
 	return fmt.Sprintf(tmpl, t.goos, t.garch, t.goarm, ext)
 }
 
