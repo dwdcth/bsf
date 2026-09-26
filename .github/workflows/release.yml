@@ -28,7 +28,6 @@ jobs:
               owner, repo,
               tag_name: process.env.GITHUB_REF,
               name: process.env.GITHUB_REF.split('/')[2],
-              draft: true,
               target_commitish: sha
             });
             console.log('created release', { release });
