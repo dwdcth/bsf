@@ -45,7 +45,11 @@ jobs:
 
     - name: Meta Tests
       run: go test -v -tags ci ./ci --timeout 60s
-      if: ${{ runner.os == 'Linux' }}
+      if: ${{ runner.os == 'Linux' && matrix.go-version == 'stable' }}
+
+    - name: Race Tests
+      run: go test -race -count=1 ./wormhole/ ./cmd/ --timeout 300s
+      if: ${{ runner.os == 'Linux' && matrix.go-version == 'stable' }}
 
     - name: Cross test for i386
       run: env GOOS=linux GOARCH=386 go test -v ./... --timeout 60s

@@ -72,6 +72,7 @@ func TestParallelSendRecvFile(t *testing.T) {
 // failOnceAt wraps an io.WriterAt and fails the first write that crosses
 // the given offset, to simulate a connection drop mid transfer.
 type failOnceAt struct {
+	mu      sync.Mutex
 	dest    io.WriterAt
 	failAt  int64
 	written int64
@@ -79,6 +80,9 @@ type failOnceAt struct {
 }
 
 func (f *failOnceAt) WriteAt(p []byte, off int64) (int, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
 	n, err := f.dest.WriteAt(p, off)
 	if err == nil {
 		f.written = off + int64(n)

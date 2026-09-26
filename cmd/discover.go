@@ -5,6 +5,7 @@ import (
 	"net"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -22,21 +23,67 @@ const (
 	broadcastQueryTimeout  = 800 * time.Millisecond
 )
 
-// startBroadcastResponder answers broadcast queries for the
-// nameplates of an embedded rendezvous server listening on tcpPort,
-// from broadcastDiscoveryPort. A second process on the same host
-// simply does not answer (queries also go to loopback, covering the same-host case).
+// broadcastServer is one embedded rendezvous server registered with
+// the process-wide broadcast responder.
+type broadcastServer struct {
+	nameplates func() []string
+	port       int
+}
+
+var (
+	broadcastMu      sync.Mutex
+	broadcastConn    *net.UDPConn
+	broadcastServers []*broadcastServer
+)
+
+// startBroadcastResponder registers an embedded rendezvous server
+// listening on tcpPort with the process-wide discovery responder and
+// returns an unregister func.
+//
+// One responder answers for every local server: a single udp socket
+// works on every platform (windows has no portable SO_REUSEPORT, so
+// per-server listeners would silently lose all but the first), and
+// each server still answers the queries for its own nameplates.
 func startBroadcastResponder(ts interface {
 	Nameplates() []string
 }, tcpPort int) func() {
-	conn, err := listenUDPReusePort(broadcastDiscoveryPort)
-	if err != nil {
-		return func() {}
+	server := &broadcastServer{
+		nameplates: ts.Nameplates,
+		port:       tcpPort,
 	}
 
-	done := make(chan struct{})
+	broadcastMu.Lock()
+	broadcastServers = append(broadcastServers, server)
+	startBroadcastListener()
+	broadcastMu.Unlock()
+
+	return func() {
+		broadcastMu.Lock()
+		for i, s := range broadcastServers {
+			if s == server {
+				broadcastServers = append(broadcastServers[:i], broadcastServers[i+1:]...)
+				break
+			}
+		}
+		broadcastMu.Unlock()
+	}
+}
+
+// startBroadcastListener starts the shared responder goroutine once.
+// The listener stays open for the life of the process; with no servers
+// registered it answers nothing. The caller holds broadcastMu.
+func startBroadcastListener() {
+	if broadcastConn != nil {
+		return
+	}
+
+	conn, err := listenUDPReusePort(broadcastDiscoveryPort)
+	if err != nil {
+		return
+	}
+	broadcastConn = conn
+
 	go func() {
-		defer close(done)
 		buf := make([]byte, 512)
 		for {
 			n, from, err := conn.ReadFromUDP(buf)
@@ -49,34 +96,33 @@ func startBroadcastResponder(ts interface {
 				continue
 			}
 
-			nameplates := ts.Nameplates()
-			if len(nameplates) == 0 {
-				continue
-			}
+			broadcastMu.Lock()
+			for _, server := range broadcastServers {
+				nameplates := server.nameplates()
+				if len(nameplates) == 0 {
+					continue
+				}
 
-			asked := fields[2]
-			match := asked == "*"
-			if !match {
-				for _, np := range nameplates {
-					if np == asked {
-						match = true
-						break
+				asked := fields[2]
+				match := asked == "*"
+				if !match {
+					for _, np := range nameplates {
+						if np == asked {
+							match = true
+							break
+						}
 					}
 				}
-			}
-			if !match {
-				continue
-			}
+				if !match {
+					continue
+				}
 
-			answer := fmt.Sprintf("%s R %s %d", broadcastMarker, strings.Join(nameplates, ","), tcpPort)
-			_, _ = conn.WriteToUDP([]byte(answer), from)
+				answer := fmt.Sprintf("%s R %s %d", broadcastMarker, strings.Join(nameplates, ","), server.port)
+				_, _ = conn.WriteToUDP([]byte(answer), from)
+			}
+			broadcastMu.Unlock()
 		}
 	}()
-
-	return func() {
-		conn.Close()
-		<-done
-	}
 }
 
 // broadcastQueryRendezvous asks the local network(s) which rendezvous
