@@ -83,7 +83,8 @@ func startEmbeddedRendezvous() (*rendezvousservertest.TestServer, error) {
 }
 
 // advertisedRendezvous announces an embedded rendezvous server via mDNS
-// and returns its loopback url plus a shutdown func.
+// and subnet broadcast, and returns its loopback url plus a shutdown
+// func.
 func advertisedRendezvous(ts *rendezvousservertest.TestServer) (string, func(), error) {
 	_, portStr, err := net.SplitHostPort(ts.Listener.Addr().String())
 	if err != nil {
@@ -103,7 +104,12 @@ func advertisedRendezvous(ts *rendezvousservertest.TestServer) (string, func(), 
 		return "", nil, err
 	}
 
+	// broadcast answers queries mDNS cannot reach, e.g. on macOS where
+	// udp 5353 is delivered to the system responder only
+	stopBroadcast := startBroadcastResponder(ts, port)
+
 	shutdown := func() {
+		stopBroadcast()
 		stopAdvert()
 		ts.Close()
 	}
@@ -197,11 +203,17 @@ func discoverRendezvous(nameplate string) string {
 }
 
 // discoverRendezvousDetail is discoverRendezvous that also reports how
-// many local servers the browse saw, so callers can tell an empty
-// network from servers that none answered for the nameplate.
+// many local servers were seen, so callers can tell an empty network
+// from servers that none answered for the nameplate. Subnet broadcast
+// is tried first: it works where mDNS cannot, notably on macOS where
+// udp 5353 is delivered to the system responder only.
 func discoverRendezvousDetail(nameplate string) (url string, serversSeen int) {
 	if nameplate == "" {
 		return "", 0
+	}
+
+	if url, ok := broadcastQueryRendezvous(nameplate); ok {
+		return url, 1
 	}
 
 	urls := browseRendezvousURLs()
@@ -216,15 +228,9 @@ func discoverRendezvousDetail(nameplate string) (url string, serversSeen int) {
 
 // browseRendezvousURLs returns the urls of every rendezvous server
 // advertised on the local network via mDNS, deduplicated. The query
-// runs once per network interface in parallel, and is retried once
-// when the first round finds nothing (mDNS queries are single-shot
-// and easily lost on wireless links).
+// runs once per network interface in parallel (broadcast discovery is
+// the primary path; this is the fallback).
 func browseRendezvousURLs() []string {
-	urls := browseRendezvousURLsOnce()
-	if len(urls) > 0 {
-		return urls
-	}
-
 	return browseRendezvousURLsOnce()
 }
 
@@ -236,8 +242,15 @@ func browseRendezvousURLsOnce() []string {
 	)
 
 	for _, iface := range multicastInterfaces() {
+		// the library aborts a query when a send fails, so an interface
+		// without an address of one family must not query that family
+		hasV4, hasV6 := interfaceFamilies(iface)
+		if !hasV4 && !hasV6 {
+			continue
+		}
+
 		wg.Add(1)
-		go func(iface *net.Interface) {
+		go func(iface *net.Interface, useV4, useV6 bool) {
 			defer wg.Done()
 
 			entries := make(chan *mdns.ServiceEntry, 16)
@@ -246,6 +259,8 @@ func browseRendezvousURLsOnce() []string {
 			params.Entries = entries
 			params.Logger = mdnsQuietLogger
 			params.Interface = iface
+			params.DisableIPv4 = !useV4
+			params.DisableIPv6 = !useV6
 
 			if err := mdns.Query(params); err != nil {
 				return
@@ -264,7 +279,7 @@ func browseRendezvousURLsOnce() []string {
 					break drain
 				}
 			}
-		}(iface)
+		}(iface, hasV4, hasV6)
 	}
 
 	wg.Wait()
@@ -276,6 +291,34 @@ func browseRendezvousURLsOnce() []string {
 	sort.Strings(urls)
 
 	return urls
+}
+
+// interfaceFamilies reports which ip versions an interface has
+// non-link-local addresses for.
+func interfaceFamilies(iface *net.Interface) (v4, v6 bool) {
+	addrs, err := iface.Addrs()
+	if err != nil {
+		return false, false
+	}
+
+	for _, addr := range addrs {
+		ipNet, ok := addr.(*net.IPNet)
+		if !ok {
+			continue
+		}
+		ip := ipNet.IP
+		if ip.IsLinkLocalUnicast() || ip.IsLoopback() {
+			continue
+		}
+
+		if ip.To4() != nil {
+			v4 = true
+		} else {
+			v6 = true
+		}
+	}
+
+	return v4, v6
 }
 
 // entryURLs returns candidate rendezvous urls from an mDNS entry: the
@@ -359,7 +402,10 @@ func activeNameplates() ([]string, error) {
 	if relayURL != "" {
 		urls = []string{relayURL}
 	} else {
-		urls = browseRendezvousURLs()
+		if url, ok := broadcastQueryRendezvous("*"); ok {
+			urls = append(urls, url)
+		}
+		urls = append(urls, browseRendezvousURLs()...)
 		if len(urls) == 0 {
 			urls = []string{wormhole.DefaultRendezvousURL}
 		}

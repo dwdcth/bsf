@@ -61,7 +61,7 @@ func recvAction(cmd *cobra.Command, args []string) {
 		fmt.Printf("Rendezvous: %s (relay)\n", relayURL)
 	} else if url, seen := discoverRendezvousDetail(codeNameplate(code)); url != "" {
 		c.RendezvousURL = url
-		fmt.Printf("Rendezvous: %s (local network, found via mDNS)\n", url)
+		fmt.Printf("Rendezvous: %s (local network)\n", url)
 	} else {
 		if seen > 0 {
 			fmt.Fprintf(os.Stderr, "note: %d local rendezvous server(s) found via mDNS, but none answered for nameplate %s (sender exited, or its firewall blocks the connection)\n", seen, codeNameplate(code))

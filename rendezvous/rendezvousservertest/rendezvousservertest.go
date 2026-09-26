@@ -92,6 +92,19 @@ func (ts *TestServer) Agents() [][]string {
 	return ts.agents
 }
 
+// Nameplates returns the currently active nameplate numbers.
+func (ts *TestServer) Nameplates() []string {
+	ts.mu.Lock()
+	defer ts.mu.Unlock()
+
+	out := make([]string, 0, len(ts.nameplates))
+	for n := range ts.nameplates {
+		out = append(out, strconv.Itoa(int(n)))
+	}
+
+	return out
+}
+
 func (ts *TestServer) WebSocketURL() string {
 	u, err := url.Parse(ts.URL)
 	if err != nil {
