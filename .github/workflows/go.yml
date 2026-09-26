@@ -71,14 +71,13 @@ jobs:
       if: ${{ runner.os == 'Linux' }}
 
     - name: Dump 386 test output on failure
-      if: failure()
+      if: ${{ failure() && runner.os == 'Linux' }}
       shell: bash
       run: |
         echo '### Failed 386 test output (test-386.out)' >> "$GITHUB_STEP_SUMMARY"
         echo '```' >> "$GITHUB_STEP_SUMMARY"
         grep -E "^(--- FAIL|FAIL|panic|# |.*\.go:[0-9]+:)" test-386.out | head -100 >> "$GITHUB_STEP_SUMMARY" || true
         echo '```' >> "$GITHUB_STEP_SUMMARY"
-      if: ${{ runner.os == 'Linux' }}
 
     - name: Cross compile for arm (RPI)
       run: env GOOS=linux GOARCH=arm GOARM=5 go build -v ./...
