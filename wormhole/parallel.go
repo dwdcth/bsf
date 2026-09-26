@@ -75,10 +75,13 @@ func sendStreamHellos(conns []net.Conn, transitKey []byte) error {
 	return nil
 }
 
-// readStreamHellos returns the connections ordered by their stream
-// index as announced in each connection's hello record.
-func readStreamHellos(conns []net.Conn, transitKey []byte) ([]net.Conn, error) {
-	ordered := make([]net.Conn, len(conns))
+// readStreamHellos returns cryptors for the connections ordered by
+// their stream index as announced in each connection's hello record.
+// The cryptors keep the bufio buffer the hello was read through: the
+// stream's first records often arrive in the same tcp segment as the
+// hello and would otherwise be lost with a fresh reader.
+func readStreamHellos(conns []net.Conn, transitKey []byte) ([]*transportCryptor, error) {
+	ordered := make([]*transportCryptor, len(conns))
 	for _, conn := range conns {
 		cryptor := newTransportCryptor(conn, transitKey, "transit_record_sender_key", "transit_record_receiver_key")
 		rec, err := cryptor.readRecord()
@@ -93,11 +96,11 @@ func readStreamHellos(conns []net.Conn, transitKey []byte) ([]net.Conn, error) {
 		if hello.Stream < 0 || hello.Stream >= len(conns) || ordered[hello.Stream] != nil {
 			return nil, fmt.Errorf("bogus stream hello index %d", hello.Stream)
 		}
-		ordered[hello.Stream] = conn
+		ordered[hello.Stream] = cryptor
 	}
 
-	for i, conn := range ordered {
-		if conn == nil {
+	for i, cryptor := range ordered {
+		if cryptor == nil {
 			return nil, fmt.Errorf("no connection announced stream %d", i)
 		}
 	}
@@ -425,16 +428,20 @@ func receiveParallelFile(ctx context.Context, clientProto *clientProtocol, trans
 	attempt := 0
 
 	for {
-		ordered, err := readStreamHellos(conns, transitKey)
+		helloCryptors, err := readStreamHellos(conns, transitKey)
 		if err != nil {
 			return err
 		}
-		conns = ordered
+		for i := range conns {
+			conns[i] = helloCryptors[i].conn
+		}
 
+		// reuse the readers the hellos came through: the first data
+		// records may already sit in their buffers
 		cryptors := make([]*transportCryptor, n)
 		for i := range cryptors {
 			readPurpose, writePurpose := streamPurposes(i, attempt)
-			cryptors[i] = newTransportCryptor(conns[i], transitKey, writePurpose, readPurpose)
+			cryptors[i] = newTransportCryptorWithReader(helloCryptors[i].conn, helloCryptors[i].reader, transitKey, writePurpose, readPurpose)
 		}
 
 		err = recvAllStreams(ctx, cryptors, attempt, total, received, hashers, dest, &progress, progressFn)

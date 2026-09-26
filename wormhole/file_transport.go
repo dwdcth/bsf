@@ -62,6 +62,14 @@ type transportCryptor struct {
 }
 
 func newTransportCryptor(c net.Conn, transitKey []byte, readPurpose, writePurpose string) *transportCryptor {
+	return newTransportCryptorWithReader(c, nil, transitKey, readPurpose, writePurpose)
+}
+
+// newTransportCryptorWithReader builds a cryptor that keeps reading from
+// an existing bufio.Reader. Records that arrived in the same tcp segment
+// as earlier ones sit in that reader's buffer; a fresh reader would
+// never see them, so a handoff must pass the buffer along.
+func newTransportCryptorWithReader(c net.Conn, reader *bufio.Reader, transitKey []byte, readPurpose, writePurpose string) *transportCryptor {
 	r := hkdf.New(sha256.New, transitKey, nil, []byte(readPurpose))
 	var readKey [32]byte
 	_, err := io.ReadFull(r, readKey[:])
@@ -76,9 +84,13 @@ func newTransportCryptor(c net.Conn, transitKey []byte, readPurpose, writePurpos
 		panic(err)
 	}
 
+	if reader == nil {
+		reader = bufio.NewReaderSize(c, 1<<17)
+	}
+
 	return &transportCryptor{
 		conn:          c,
-		reader:        bufio.NewReaderSize(c, 1<<17),
+		reader:        reader,
 		prefixBuf:     make([]byte, 4+crypto.NonceSize),
 		nextReadNonce: big.NewInt(0),
 		readKey:       readKey,

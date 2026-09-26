@@ -183,6 +183,48 @@ func TestSingleStreamFallbackStillWorks(t *testing.T) {
 	}
 }
 
+func TestParallelTinyFile(t *testing.T) {
+	// a payload smaller than one record used to deadlock when the hello
+	// and all the data arrived in one tcp segment: the hello's bufio
+	// reader swallowed the records and the fresh stream readers waited
+	// for bytes that were already consumed
+	rs := rendezvousServertest(t)
+	url := rs.WebSocketURL()
+
+	payload := make([]byte, 517)
+	if _, err := rand.Read(payload); err != nil {
+		t.Fatal(err)
+	}
+
+	var sender Client
+	sender.RendezvousURL = url
+	code, statusCh, err := sender.SendFile(context.Background(), "tiny.bin", bytes.NewReader(payload), WithParallel(4))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var receiver Client
+	receiver.RendezvousURL = url
+	receiver.ParallelStreams = 4
+	msg, err := receiver.Receive(context.Background(), code)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	dest := &bytesBufferAt{}
+	if err := msg.ReceiveFileInto(context.Background(), dest, nil); err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(dest.Bytes(), payload) {
+		t.Fatalf("received %d bytes, want %d", dest.Len(), len(payload))
+	}
+
+	res := <-statusCh
+	if !res.OK {
+		t.Fatalf("send failed: %s", res.Error)
+	}
+}
+
 func TestParallelSendRecvDirectory(t *testing.T) {
 	rs := rendezvousServertest(t)
 	url := rs.WebSocketURL()
