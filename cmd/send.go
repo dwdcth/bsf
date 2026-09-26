@@ -26,7 +26,7 @@ var (
 	sendTextFlag     string
 	showQRCode       bool
 	disableClipboard bool
-	lanMode          bool
+	relayMode        bool
 )
 
 func sendCommand() *cobra.Command {
@@ -63,7 +63,7 @@ func sendCommand() *cobra.Command {
 	cmd.Flags().BoolVar(&hideProgressBar, "hide-progress", false, "suppress progress-bar display")
 	cmd.Flags().BoolVar(&showQRCode, "qr", false, "display code as QR code (experimental)")
 	cmd.Flags().BoolVar(&disableClipboard, "disable-clipboard", false, "do not copy the wormhole code to the system clipboard")
-	cmd.Flags().BoolVar(&lanMode, "lan", false, "send only via an embedded mDNS-advertised rendezvous server on the local network, skipping the relay")
+	cmd.Flags().BoolVar(&relayMode, "relay", false, "also register the code on the relay (--relay-url or the public one) so receivers outside the local network can connect")
 
 	return &cmd
 }
@@ -108,13 +108,14 @@ type sendSession struct {
 	shutdown func()
 }
 
-// startSendSession runs a send on the relay (the one given by
-// --relay-url, or the public one) and, in parallel, on an embedded
-// mDNS-advertised rendezvous server on the local network, mirroring the
-// same code on both: whichever receiver shows up first wins and the
-// other leg is cancelled. With --lan the relay is skipped entirely, and
-// when the relay is unreachable the send falls back to the embedded
-// server alone.
+// startSendSession runs a send on an embedded, mDNS-advertised
+// rendezvous server on the local network. That is the default and the
+// whole transfer stays on the lan. With --relay (or an explicit
+// --relay-url) the code is also registered on a relay so receivers
+// outside the local network can connect: the relay mints the code, the
+// embedded server mirrors it, and whichever receiver shows up first
+// wins while the other leg is cancelled. If that relay is unreachable
+// the send falls back to the embedded server alone.
 func startSendSession(run func(c *wormhole.Client, ctx context.Context, code string) (string, chan wormhole.SendResult, error)) (*sendSession, error) {
 	session := &sendSession{shutdown: func() {}}
 
@@ -123,7 +124,7 @@ func startSendSession(run func(c *wormhole.Client, ctx context.Context, code str
 	if relayLegURL == "" {
 		relayLegURL = wormhole.DefaultRendezvousURL
 	}
-	if !lanMode && relayReachable(relayLegURL) {
+	if (relayMode || relayURL != "") && relayReachable(relayLegURL) {
 		ctx, cancel := context.WithCancel(context.Background())
 		c := newClient()
 		code, status, err := run(&c, ctx, codeFlag)
@@ -137,8 +138,8 @@ func startSendSession(run func(c *wormhole.Client, ctx context.Context, code str
 	}
 
 	if session.code == "" {
-		// no relay leg (--lan, or the relay was unreachable): mint the
-		// code on an embedded server
+		// no relay leg (default lan-only mode, --relay not given, or the
+		// relay was unreachable): mint the code on an embedded server
 		url, shutdown, err := lanRendezvous()
 		if err != nil {
 			if relayErr != nil {
@@ -256,16 +257,37 @@ func (s *sendSession) wait() wormhole.SendResult {
 	return done.res
 }
 
-func printInstructions(code string) {
-	mwCmd := "wormhole receive"
-	wwCmd := "bsf recv"
-
-	if verify {
-		mwCmd = mwCmd + " --verify"
-		wwCmd = wwCmd + " --verify"
+// onRelay reports whether any leg of this send registered the code on
+// a relay, i.e. whether receivers outside the local network can
+// connect.
+func (s *sendSession) onRelay() bool {
+	for _, leg := range s.legs {
+		if leg.via == "relay" {
+			return true
+		}
 	}
+	return false
+}
 
-	fmt.Printf("On the other computer, please run: %s (or %s)\n", mwCmd, wwCmd)
+func printInstructions(code string, onRelay bool) {
+	if onRelay {
+		mwCmd := "wormhole receive"
+		wwCmd := "bsf recv"
+
+		if verify {
+			mwCmd = mwCmd + " --verify"
+			wwCmd = wwCmd + " --verify"
+		}
+
+		fmt.Printf("On the other computer, please run: %s (or %s)\n", mwCmd, wwCmd)
+	} else {
+		wwCmd := "bsf <code>"
+		if verify {
+			wwCmd = wwCmd + " --verify"
+		}
+
+		fmt.Printf("On the other computer on this network, please run: %s\n", wwCmd)
+	}
 	fmt.Printf("Wormhole code is: %s\n", code)
 
 	if !disableClipboard {
@@ -323,7 +345,7 @@ func sendFile(filename string) {
 	}
 	defer session.shutdown()
 
-	printInstructions(session.code)
+	printInstructions(session.code, session.onRelay())
 
 	s := session.wait()
 
@@ -384,7 +406,7 @@ func sendDir(dirpath string) {
 	}
 	defer session.shutdown()
 
-	printInstructions(session.code)
+	printInstructions(session.code, session.onRelay())
 
 	s := session.wait()
 
@@ -424,7 +446,7 @@ func sendText() {
 	}
 	defer session.shutdown()
 
-	printInstructions(session.code)
+	printInstructions(session.code, session.onRelay())
 
 	s := session.wait()
 

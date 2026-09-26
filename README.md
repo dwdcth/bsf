@@ -76,35 +76,34 @@ via mDNS and only falls back to the public relay when no local server is found.
 ### Running without the public relay (LAN)
 
 The wormhole protocol always needs a rendezvous (mailbox) server for the initial handshake,
-but it does not have to be the public one. By default a send runs on **two rendezvous legs
-at once**: the relay (`--relay-url` or the public one) mints the code, and an embedded
-mDNS-advertised server on the local network mirrors the same code. Whichever receiver
-shows up first — a LAN peer discovering the sender via mDNS, or a remote peer going through
-the relay — wins, and the other leg is cancelled. If the relay is unreachable (isolated
-networks), the send falls back to the embedded server alone:
+but it does not have to be the public one. By default a send **stays entirely on the local
+network**: the sender embeds a rendezvous server, mints the code locally, and advertises
+itself via mDNS — no relay is contacted and the code never leaves the network:
 
 ```
 # machine A
 $ bsf send file.txt
+Send mode: local network
+On the other computer on this network, please run: bsf <code>
 Wormhole code is: 1-torpedo-newborn
 
-# machine B on the same LAN (auto-discovers the sender via mDNS, never touches the relay)
+# machine B on the same LAN (auto-discovers the sender via mDNS)
 $ bsf 1-torpedo-newborn
-
-# machine B elsewhere (goes through the relay, as before)
-$ bsf 1-torpedo-newborn
+Rendezvous: ws://192.168.31.37:40000/ws (local network, found via mDNS)
 ```
 
 Receivers browse the local network for `_bsf._tcp` services and ask each one whether it
-knows the code's nameplate, trying the next server until one does. If no local server has
-it, they fall back to the public relay, so internet transfers keep working unchanged
-(adding ~1s of discovery time).
+knows the code's nameplate, trying the next server until one does.
 
-To skip the relay entirely (privacy, or known-LAN-only transfers), pass `--lan`: the code
-is then minted locally on the embedded server and never leaves the local network:
+To also let receivers **outside** the local network connect, pass `--relay` (or an
+explicit `--relay-url`): the send then runs on two rendezvous legs at once — the relay
+mints the code and the embedded server mirrors it, whichever receiver shows up first
+wins and the other leg is cancelled. If the relay is unreachable the send quietly falls
+back to local-network-only:
 
 ```
-$ bsf send --lan file.txt
+$ bsf send --relay file.txt
+Send mode: relay + local network
 ```
 
 For a longer-lived rendezvous server, `bsf server` runs one and also

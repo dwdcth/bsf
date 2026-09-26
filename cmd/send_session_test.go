@@ -66,6 +66,51 @@ func dualSendSession(t *testing.T, msg string) (*sendSession, func()) {
 	}
 }
 
+func TestDefaultSendIsLANOnly(t *testing.T) {
+	// the default send must not contact any relay: the code is minted
+	// locally and the only leg is the embedded advertised server
+	relayURL = ""
+	relayMode = false
+	t.Cleanup(func() {
+		relayURL = ""
+		relayMode = false
+	})
+
+	session, cleanup := dualSendSession(t, "default lan only")
+	defer cleanup()
+
+	if len(session.legs) != 1 || session.legs[0].via != "local network" {
+		t.Fatalf("expected a single local network leg, got %+v", session.legs)
+	}
+	if session.onRelay() {
+		t.Error("default send should not report a relay leg")
+	}
+
+	found := discoverRendezvous(codeNameplate(session.code))
+	if found == "" {
+		t.Skip("mDNS multicast not available in this environment")
+	}
+
+	var receiver wormhole.Client
+	receiver.RendezvousURL = found
+	msg, err := receiver.Receive(context.Background(), session.code)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	body, err := io.ReadAll(msg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(body) != "default lan only" {
+		t.Fatalf("received %q, want %q", body, "default lan only")
+	}
+
+	if res := session.wait(); !res.OK {
+		t.Fatalf("send failed: %s", res.Error)
+	}
+}
+
 func TestDualSendReceiverViaLAN(t *testing.T) {
 	ts, err := startRendezvousServer("127.0.0.1:0")
 	if err != nil {
@@ -74,10 +119,8 @@ func TestDualSendReceiverViaLAN(t *testing.T) {
 	defer ts.Close()
 
 	relayURL = ts.WebSocketURL()
-	lanMode = false
 	t.Cleanup(func() {
 		relayURL = ""
-		lanMode = false
 	})
 
 	session, cleanup := dualSendSession(t, "dual send via lan")
@@ -123,10 +166,8 @@ func TestDualSendReceiverViaRelay(t *testing.T) {
 	defer ts.Close()
 
 	relayURL = ts.WebSocketURL()
-	lanMode = false
 	t.Cleanup(func() {
 		relayURL = ""
-		lanMode = false
 	})
 
 	session, cleanup := dualSendSession(t, "dual send via relay")
@@ -161,10 +202,8 @@ func TestDualSendRelayUnreachableFallsBackToLAN(t *testing.T) {
 	// dead relay port fails fast, so the session must fall back to
 	// minting the code on the embedded lan server alone
 	relayURL = "ws://127.0.0.1:1/ws"
-	lanMode = false
 	t.Cleanup(func() {
 		relayURL = ""
-		lanMode = false
 	})
 
 	session, cleanup := dualSendSession(t, "fallback to lan")
