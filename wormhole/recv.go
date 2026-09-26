@@ -164,11 +164,29 @@ func (c *Client) Receive(ctx context.Context, code string) (fr *IncomingMessage,
 		return nil, fmt.Errorf("make transit msg error: %s", err)
 	}
 
+	// announce that we will use parallel streams, so the sender knows
+	// our N connections are streams and not racing dial junk; the
+	// count is the sender's offer, which is what it will accept
+	if c.ParallelStreams > 1 && gotTransitMsg.Parallel > 1 && fr.Type == TransferFile {
+		transitMsg.Parallel = gotTransitMsg.Parallel
+	}
+
 	err = clientProto.WriteAppData(ctx, &genericMessage{
 		Transit: transitMsg,
 	})
 	if err != nil {
 		return nil, err
+	}
+
+	if c.ParallelStreams > 1 && gotTransitMsg.Parallel > 1 && fr.Type == TransferFile {
+		fr.parallel = &parallelReceive{
+			clientProto: clientProto,
+			transport:   transport,
+			transitKey:  transitKey,
+			peerTransit: gotTransitMsg,
+			streams:     gotTransitMsg.Parallel,
+			total:       fr.TransferBytes64,
+		}
 	}
 
 	reject := func() (initErr error) {
@@ -198,8 +216,12 @@ func (c *Client) Receive(ctx context.Context, code string) (fr *IncomingMessage,
 
 	// defer actually sending the "ok" message until
 	// the caller does a read on the IncomingMessage object.
+	keepMailbox := false
 	acceptAndInitialize := func() (initErr error) {
 		defer func() {
+			if keepMailbox {
+				return
+			}
 			mood := rendezvous.Errory
 			if returnErr == nil {
 				mood = rendezvous.Happy
@@ -219,6 +241,13 @@ func (c *Client) Receive(ctx context.Context, code string) (fr *IncomingMessage,
 		err = clientProto.WriteAppData(ctx, answer)
 		if err != nil {
 			return err
+		}
+
+		if fr.parallel != nil {
+			// parallel transfer: the mailbox must stay open for the
+			// resume protocol, ReceiveFileInto closes it when done
+			keepMailbox = true
+			return nil
 		}
 
 		conn, err := transport.connectDirect(&gotTransitMsg)
@@ -294,8 +323,10 @@ type IncomingMessage struct {
 	initializeTransfer  func() error
 	rejectTransfer      func() error
 
-	cryptor   *transportCryptor
-	buf       []byte
+	cryptor *transportCryptor
+	buf     []byte
+
+	parallel  *parallelReceive
 	readCount int64
 	sha256    hash.Hash
 

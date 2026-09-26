@@ -125,12 +125,27 @@ rendezvous server. Note: this server is a lightweight implementation intended fo
 personal/LAN use — it has no nameplate expiry or rate limiting, so don't expose it to
 the internet. Broadcast discovery requires the two machines to share a subnet.
 
+### Parallel streams and automatic resume
+
+File transfers between two bsf clients use multiple transit streams in parallel
+(`--parallel`, default 4, on both `send` and `receive`): the file is split into
+contiguous chunks, each stream carries one chunk, and each stream derives its own
+record keys (per stream and per resume attempt), so record nonces are never reused.
+Python magic-wormhole peers automatically get the standard single stream protocol.
+
+When a transit connection drops mid transfer, both sides keep their state, the
+receiver reports how far every stream got, and the transfer resumes from those
+positions on fresh connections — no data is re-sent. The final ack verifies the
+sha256 of the whole file. If the connection to the rendezvous server itself is
+lost, or one side exits, the transfer fails as usual.
+
 Firewall note for senders: the embedded rendezvous server tries to bind tcp port
-`40009` (falling back to a random port when several senders run on one machine), and
-discovery probes use udp `53534`. On machines running a firewall, allow both:
+`40009` and the transit listener tcp port `40010` (both falling back to random
+ports when several senders run on one machine); discovery probes use udp `53534`.
+On machines running a firewall, allow them:
 
 ```
-ufw allow 53534/udp && ufw allow 40009/tcp     # or the firewalld equivalent
+ufw allow 53534/udp && ufw allow 40009:40010/tcp     # or the firewalld equivalent
 ```
 
 A receiver that falls back to the public relay prints a note explaining what the

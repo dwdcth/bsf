@@ -38,6 +38,11 @@ type Client struct {
 	// If empty, DefaultTransitRelayAddress will be used.
 	TransitRelayAddress string
 
+	// ParallelStreams is the number of transit streams this client
+	// agrees to use for receiving files, when the sender offers more
+	// than one. Zero or one means the standard single stream protocol.
+	ParallelStreams int
+
 	// PassPhraseComponentLength is the number of words to use
 	// when generating a passprase. Any value less than 2 will
 	// default to 2.
@@ -285,6 +290,11 @@ type transitHintsV1Hint struct {
 type transitMsg struct {
 	AbilitiesV1 []transitAbility `json:"abilities-v1"`
 	HintsV1     []transitHintsV1 `json:"hints-v1"`
+
+	// Parallel is the number of transit streams a bsf sender offers.
+	// Python clients ignore the unknown field and keep using a single
+	// stream.
+	Parallel int `json:"bsf-parallel,omitempty"`
 }
 
 func (m *transitMsg) Type() collectType {
@@ -565,6 +575,17 @@ func (cc *clientProtocol) WriteAppData(ctx context.Context, v *genericMessage) e
 	}
 
 	phase := strconv.Itoa(nextPhase)
+
+	return sendEncryptedMessage(ctx, cc.rc, jsonOut, cc.sharedKey, cc.sideID, phase)
+}
+
+// writePhase sends an encrypted application message on an explicit
+// phase, for the bsf-parallel resume protocol.
+func (cc *clientProtocol) writePhase(ctx context.Context, phase string, v interface{}) error {
+	jsonOut, err := json.Marshal(v)
+	if err != nil {
+		return err
+	}
 
 	return sendEncryptedMessage(ctx, cc.rc, jsonOut, cc.sharedKey, cc.sideID, phase)
 }

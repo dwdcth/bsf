@@ -27,6 +27,7 @@ func recvCommand() *cobra.Command {
 
 	cmd.Flags().BoolVarP(&verify, "verify", "v", false, "display verification string (and wait for approval)")
 	cmd.Flags().BoolVar(&hideProgressBar, "hide-progress", false, "suppress progress-bar display")
+	cmd.Flags().IntVar(&parallelStreams, "parallel", 4, "number of parallel transit streams to use when the sender offers them")
 
 	cmd.ValidArgsFunction = recvCodeCompletion
 
@@ -129,15 +130,40 @@ func recvAction(cmd *cobra.Command, args []string) {
 					bail("Failed to create tempfile: %s", err)
 				}
 
-				proxyReader := pbProxyReader(msg, msg.TransferBytes64)
+				if msg.ParallelStreams() > 1 {
+					// multi-stream transfer with automatic resume:
+					// progress comes from a callback instead of the
+					// io.Reader proxy
+					var bar *pb.ProgressBar
+					progressFn := func(received, total int64) {}
+					if !hideProgressBar {
+						bar = pb.Full.Start64(msg.TransferBytes64)
+						bar.Set(pb.Bytes, true)
+						bar.Set(pb.SIBytesPrefix, true)
+						progressFn = func(received, total int64) {
+							bar.SetCurrent(received)
+						}
+					}
 
-				_, err = io.Copy(f, proxyReader)
-				if err != nil {
-					os.Remove(f.Name())
-					bail("Receive file error: %s", err)
+					err = msg.ReceiveFileInto(ctx, f, progressFn)
+					if bar != nil {
+						bar.Finish()
+					}
+					if err != nil {
+						os.Remove(f.Name())
+						bail("Receive file error: %s", err)
+					}
+				} else {
+					proxyReader := pbProxyReader(msg, msg.TransferBytes64)
+
+					_, err = io.Copy(f, proxyReader)
+					if err != nil {
+						os.Remove(f.Name())
+						bail("Receive file error: %s", err)
+					}
+
+					proxyReader.Close()
 				}
-
-				proxyReader.Close()
 
 				tmpName := f.Name()
 				f.Close()

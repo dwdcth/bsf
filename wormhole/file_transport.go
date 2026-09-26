@@ -1,6 +1,7 @@
 package wormhole
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"crypto/sha256"
@@ -12,7 +13,9 @@ import (
 	"math"
 	"math/big"
 	"net"
+	"os"
 	"strconv"
+	"sync"
 	"time"
 
 	"github.com/dwdcth/bsf/internal/crypto"
@@ -48,9 +51,11 @@ func (tt TransferType) String() string {
 
 type transportCryptor struct {
 	conn           net.Conn
+	reader         *bufio.Reader
 	prefixBuf      []byte
 	nextReadNonce  *big.Int
 	nextWriteNonce uint64
+	writeBuf       []byte
 	err            error
 	readKey        [32]byte
 	writeKey       [32]byte
@@ -73,6 +78,7 @@ func newTransportCryptor(c net.Conn, transitKey []byte, readPurpose, writePurpos
 
 	return &transportCryptor{
 		conn:          c,
+		reader:        bufio.NewReaderSize(c, 1<<17),
 		prefixBuf:     make([]byte, 4+crypto.NonceSize),
 		nextReadNonce: big.NewInt(0),
 		readKey:       readKey,
@@ -87,7 +93,7 @@ func (d *transportCryptor) readRecord() ([]byte, error) {
 	if d.err != nil {
 		return nil, d.err
 	}
-	_, err := io.ReadFull(d.conn, d.prefixBuf)
+	_, err := io.ReadFull(d.reader, d.prefixBuf)
 	if err != nil {
 		d.err = err
 		return nil, d.err
@@ -108,7 +114,7 @@ func (d *transportCryptor) readRecord() ([]byte, error) {
 	d.nextReadNonce.Add(d.nextReadNonce, big.NewInt(1))
 
 	sealedMsg := make([]byte, l-crypto.NonceSize)
-	_, err = io.ReadFull(d.conn, sealedMsg)
+	_, err = io.ReadFull(d.reader, sealedMsg)
 	if err != nil {
 		d.err = err
 		return nil, d.err
@@ -133,24 +139,22 @@ func (d *transportCryptor) writeRecord(msg []byte) error {
 	binary.BigEndian.PutUint64(nonce[crypto.NonceSize-8:], d.nextWriteNonce)
 	d.nextWriteNonce++
 
-	sealedMsg := secretbox.Seal(nil, msg, &nonce, &d.writeKey)
-
-	nonceAndSealedMsg := append(nonce[:], sealedMsg...)
-
-	// we do an explit cast to int64 to avoid compilation failures
-	// for 32bit systems.
-	nonceAndSealedMsgSize := int64(len(nonceAndSealedMsg))
-
-	if nonceAndSealedMsgSize >= math.MaxUint32 {
-		panic(fmt.Sprintf("writeRecord too large: %d", len(nonceAndSealedMsg)))
+	// one reusable buffer per cryptor instead of three allocations
+	// per record
+	needed := 4 + crypto.NonceSize + len(msg) + secretbox.Overhead
+	if int64(needed) >= math.MaxUint32 {
+		panic(fmt.Sprintf("writeRecord too large: %d", len(msg)))
 	}
+	if cap(d.writeBuf) < needed {
+		d.writeBuf = make([]byte, needed)
+	}
+	buf := d.writeBuf[:needed]
 
-	l := make([]byte, 4)
-	binary.BigEndian.PutUint32(l, uint32(len(nonceAndSealedMsg)))
+	binary.BigEndian.PutUint32(buf[:4], uint32(crypto.NonceSize+len(msg)+secretbox.Overhead))
+	copy(buf[4:], nonce[:])
+	secretbox.Seal(buf[4+crypto.NonceSize:4+crypto.NonceSize], msg, &nonce, &d.writeKey)
 
-	lenNonceAndSealedMsg := append(l, nonceAndSealedMsg...)
-
-	_, err := d.conn.Write(lenNonceAndSealedMsg)
+	_, err := d.conn.Write(buf)
 	return err
 }
 
@@ -163,11 +167,13 @@ func newFileTransport(transitKey []byte, appID, relayAddr string) *fileTransport
 }
 
 type fileTransport struct {
-	listener   net.Listener
-	relayConn  net.Conn
-	relayAddr  string
-	transitKey []byte
-	appID      string
+	listener        net.Listener
+	relayConn       net.Conn
+	relayAddr       string
+	transitKey      []byte
+	appID           string
+	parallelOnce    sync.Once
+	parallelReadyCh chan net.Conn
 }
 
 func (t *fileTransport) connectViaRelay(otherTransit *transitMsg) (net.Conn, error) {
@@ -309,6 +315,7 @@ func (t *fileTransport) directRecvHandshake(ctx context.Context, addr string, co
 
 	_, err := io.ReadFull(conn, gotHeader)
 	if err != nil {
+		fmt.Fprintf(os.Stderr, "[dbg] dialer %s read header err: %s\n", addr, err)
 		conn.Close()
 		failChan <- addr
 		return
@@ -322,6 +329,7 @@ func (t *fileTransport) directRecvHandshake(ctx context.Context, addr string, co
 
 	_, err = conn.Write(t.receiverHandshakeHeader())
 	if err != nil {
+		fmt.Fprintf(os.Stderr, "[dbg] dialer %s write reply err: %s\n", addr, err)
 		conn.Close()
 		failChan <- addr
 		return
@@ -336,6 +344,7 @@ func (t *fileTransport) directRecvHandshake(ctx context.Context, addr string, co
 	}
 
 	if !bytes.Equal(gotGo, []byte("go\n")) {
+		fmt.Fprintf(os.Stderr, "[dbg] dialer %s got go=%q\n", addr, gotGo)
 		conn.Close()
 		failChan <- addr
 		return
@@ -460,9 +469,15 @@ func (t *fileTransport) listen() error {
 		return nil
 	}
 
-	l, err := net.Listen("tcp", ":0")
+	// prefer a fixed port so firewalls only need one rule and resume
+	// tests can target it; fall back to a random port when several
+	// senders share a host
+	l, err := net.Listen("tcp", fmt.Sprintf(":%d", defaultTransitPort))
 	if err != nil {
-		return err
+		l, err = net.Listen("tcp", ":0")
+		if err != nil {
+			return err
+		}
 	}
 
 	t.listener = l
@@ -513,6 +528,84 @@ func (t *fileTransport) waitForRelayPeer(conn net.Conn, cancelCh chan struct{}) 
 	}
 
 	return nil
+}
+
+// acceptConnections accepts up to n handshaked connections: the first
+// within parallelFirstWait, the rest within parallelAcceptWait of each
+// other. The accept loop is started once per transport and kept alive,
+// so resumed transfers can keep using it; the caller closes the
+// listener when done.
+func (t *fileTransport) acceptConnections(ctx context.Context, n int) ([]net.Conn, error) {
+	if t.listener == nil {
+		return nil, errors.New("no transit listener")
+	}
+
+	t.parallelOnce.Do(func() {
+		t.parallelReadyCh = make(chan net.Conn, n)
+
+		if t.relayConn != nil {
+			go func() {
+				cancelCh := make(chan struct{})
+				waitErr := t.waitForRelayPeer(t.relayConn, cancelCh)
+				if waitErr != nil {
+					return
+				}
+				t.handleIncomingConnection(t.relayConn, t.parallelReadyCh, cancelCh)
+			}()
+		}
+
+		go func() {
+			for {
+				conn, err := t.listener.Accept()
+				if err == io.EOF {
+					return
+				} else if err != nil {
+					return
+				}
+
+				go t.handleIncomingConnection(conn, t.parallelReadyCh, make(chan struct{}))
+			}
+		}()
+	})
+
+	var (
+		conns  []net.Conn
+		grace  *time.Timer
+		graceC <-chan time.Time
+	)
+
+	for len(conns) < n {
+		var firstC <-chan time.Time
+		if len(conns) == 0 {
+			firstC = time.After(parallelFirstWait)
+		}
+
+		select {
+		case <-ctx.Done():
+			for _, c := range conns {
+				c.Close()
+			}
+			return nil, ctx.Err()
+		case conn := <-t.parallelReadyCh:
+			// complete the transit handshake: the dialer is waiting
+			// for this go-ahead after sending its handshake header
+			if _, err := conn.Write([]byte("go\n")); err != nil {
+				conn.Close()
+				continue
+			}
+			conns = append(conns, conn)
+			if grace == nil {
+				grace = time.NewTimer(parallelAcceptWait)
+				graceC = grace.C
+			}
+		case <-graceC:
+			return conns, nil
+		case <-firstC:
+			return conns, nil
+		}
+	}
+
+	return conns, nil
 }
 
 func (t *fileTransport) acceptConnection(ctx context.Context) (net.Conn, error) {

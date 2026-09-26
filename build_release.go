@@ -50,6 +50,29 @@ func main() {
 			fmt.Fprintf(os.Stderr, "%s %s err: %s, out: %s\n", t.goos, t.garch, err, out)
 			os.Exit(1)
 		}
+
+		packArchive(&t)
+	}
+}
+
+// packArchive compresses the freshly built binary into a tar.gz archive next
+// to it and removes the intermediate raw binary, so that release/ ends up
+// containing only tar.gz artifacts.
+func packArchive(t *target) {
+	bin := filepath.Join("release", t.binaryName())
+	archive := filepath.Join("release", t.archiveName())
+
+	cmd := exec.Command("tar", "-czf", archive, "-C", "release", t.binaryName())
+	fmt.Printf("run: %s %s\n", cmd.Path, strings.Join(cmd.Args[1:], " "))
+
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "tar %s err: %s, out: %s\n", archive, err, out)
+		os.Exit(1)
+	}
+
+	if err := os.Remove(bin); err != nil {
+		log.Fatalf("remove %s failed: %s", bin, err)
 	}
 }
 
@@ -84,6 +107,10 @@ func (t *target) binaryName() string {
 
 	tmpl := "bsf-%s-%s%s%s"
 	return fmt.Sprintf(tmpl, t.goos, t.garch, t.goarm, ext)
+}
+
+func (t *target) archiveName() string {
+	return strings.TrimSuffix(t.binaryName(), ".exe") + ".tar.gz"
 }
 
 var targets = []target{

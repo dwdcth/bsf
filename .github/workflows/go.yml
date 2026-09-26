@@ -31,11 +31,14 @@ jobs:
       run: ls -lh bsf
       if: ${{ runner.os == 'Linux' }}
 
+    - name: Package binary (tar.gz)
+      run: tar -czf bsf-${{ runner.os }}.tar.gz bsf${{ runner.os == 'Windows' && '.exe' || '' }}
+
     - name: Upload binary
       uses: actions/upload-artifact@v4
       with:
         name: bsf-${{ matrix.go-version }}-${{ runner.os }}
-        path: bsf*
+        path: bsf-${{ runner.os }}.tar.gz
 
     - name: Test
       run: go test -v ./... --timeout 60s

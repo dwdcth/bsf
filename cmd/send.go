@@ -27,6 +27,7 @@ var (
 	showQRCode       bool
 	disableClipboard bool
 	relayMode        bool
+	parallelStreams  int
 )
 
 func sendCommand() *cobra.Command {
@@ -64,6 +65,7 @@ func sendCommand() *cobra.Command {
 	cmd.Flags().BoolVar(&showQRCode, "qr", false, "display code as QR code (experimental)")
 	cmd.Flags().BoolVar(&disableClipboard, "disable-clipboard", false, "do not copy the wormhole code to the system clipboard")
 	cmd.Flags().BoolVar(&relayMode, "relay", false, "also register the code on the relay (--relay-url or the public one) so receivers outside the local network can connect")
+	cmd.Flags().IntVar(&parallelStreams, "parallel", 4, "number of parallel transit streams for file transfers (bsf receivers only)")
 
 	return &cmd
 }
@@ -76,6 +78,7 @@ func newClient() wormhole.Client {
 	c := wormhole.Client{
 		RendezvousURL:             relayURL,
 		PassPhraseComponentLength: codeLen,
+		ParallelStreams:           parallelStreams,
 	}
 
 	if verify {
@@ -337,6 +340,9 @@ func sendFile(filename string) {
 		opts := args
 		if code != "" {
 			opts = append(opts, wormhole.WithCode(code))
+		}
+		if parallelStreams > 1 {
+			opts = append(opts, wormhole.WithParallel(parallelStreams))
 		}
 		return c.SendFile(ctx, filepath.Base(filename), f, opts...)
 	})

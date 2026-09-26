@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"io/ioutil"
+	"net"
 	"os"
 	"path/filepath"
 	"strings"
@@ -316,6 +317,10 @@ func (c *Client) sendFileDirectory(ctx context.Context, offer *offerMsg, r io.Re
 			return
 		}
 
+		if offer.File != nil && options.parallel > 1 {
+			transit.Parallel = options.parallel
+		}
+
 		err = clientProto.WriteAppData(ctx, &genericMessage{
 			Transit: transit,
 		})
@@ -340,6 +345,15 @@ func (c *Client) sendFileDirectory(ctx context.Context, offer *offerMsg, r io.Re
 		}
 		defer collector.close()
 
+		// the receiver's transit arrives before its answer and tells
+		// us whether it opened N parallel streams on purpose
+		var recvTransit transitMsg
+		err = collector.waitFor(&recvTransit)
+		if err != nil {
+			sendErr(err)
+			return
+		}
+
 		var answer answerMsg
 		err = collector.waitFor(&answer)
 		if err != nil {
@@ -352,15 +366,55 @@ func (c *Client) sendFileDirectory(ctx context.Context, offer *offerMsg, r io.Re
 			return
 		}
 
-		conn, err := transport.acceptConnection(ctx)
-		if err != nil {
-			sendErr(err)
-			return
+		var conn net.Conn
+		if offer.File != nil && options.parallel > 1 && recvTransit.Parallel > 1 {
+			if readerAt, ok := r.(io.ReaderAt); ok {
+				conns, err := transport.acceptConnections(ctx, options.parallel)
+				if err != nil {
+					sendErr(err)
+					return
+				}
+
+				if len(conns) == options.parallel {
+					err := sendParallelFile(ctx, collector, clientProto, transport, transitKey, offer.File.FileSize, readerAt, conns, options.progressFunc)
+					if err != nil {
+						sendErr(err)
+					} else {
+						ch <- SendResult{OK: true}
+						close(ch)
+					}
+					return
+				}
+
+				if len(conns) == 0 {
+					sendErr(errors.New("no transit connection from receiver"))
+					return
+				}
+
+				// fewer streams than negotiated: the receiver does not
+				// do parallel (a python client); fall back to a single
+				// stream on the first connection
+				for _, extra := range conns[1:] {
+					extra.Close()
+				}
+				conn = conns[0]
+			}
+		}
+
+		if conn == nil {
+			conn, err = transport.acceptConnection(ctx)
+			if err != nil {
+				sendErr(err)
+				return
+			}
 		}
 
 		cryptor := newTransportCryptor(conn, transitKey, "transit_record_receiver_key", "transit_record_sender_key")
 
-		recordSize := (1 << 14)
+		// large records cut per-record framing and syscall overhead;
+		// the length-prefixed record format allows any size (python
+		// clients accept up to 2^32-1)
+		recordSize := (1 << 18)
 		// chunk
 		recordSlice := make([]byte, recordSize-secretbox.Overhead)
 		hasher := sha256.New()
@@ -621,6 +675,7 @@ func readSeekerSize(r io.ReadSeeker) (int64, error) {
 type sendOptions struct {
 	code         string
 	progressFunc progressFunc
+	parallel     int
 }
 
 type SendOption interface {
@@ -681,4 +736,23 @@ func (o progressSendOption) setOption(opts *sendOptions) error {
 // SendFile or SendDirectory.
 func WithProgress(f func(sentBytes int64, totalBytes int64)) SendOption {
 	return progressSendOption{f}
+}
+
+type parallelSendOption struct {
+	n int
+}
+
+func (p parallelSendOption) setOption(opts *sendOptions) error {
+	if p.n < 1 || p.n > 16 {
+		return fmt.Errorf("parallel streams must be between 1 and 16, got %d", p.n)
+	}
+	opts.parallel = p.n
+	return nil
+}
+
+// WithParallel sends files across n transit connections in parallel
+// when the receiver also supports it (bsf receivers only); otherwise
+// falls back to a single stream.
+func WithParallel(n int) SendOption {
+	return parallelSendOption{n}
 }
