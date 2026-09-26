@@ -21,10 +21,15 @@ import (
 )
 
 // mdnsServiceType is the fixed mDNS service name advertised by every
-// rendezvous provider on the local network: senders started with --lan
-// embed one, and `bsf server` is one. Receivers browse this
-// service type and ask each server whether it knows their nameplate.
+// rendezvous provider on the local network: senders embed one, and
+// `bsf server` is one. Receivers browse this service type and ask each
+// server whether it knows their nameplate.
 const mdnsServiceType = "_bsf._tcp"
+
+// defaultRendezvousPort is the port embedded rendezvous servers try to
+// bind first, so a sender behind a firewall only needs a single tcp
+// allow rule (a second concurrent sender falls back to a random port).
+const defaultRendezvousPort = 40009
 
 var mdnsQueryTimeout = 1200 * time.Millisecond
 
@@ -36,7 +41,7 @@ var mdnsQuietLogger = log.New(io.Discard, "", 0)
 // the local network via mDNS, and returns the loopback ws url for the
 // sender's own client plus a shutdown func.
 func lanRendezvous() (string, func(), error) {
-	ts, err := startRendezvousServer(":0")
+	ts, err := startEmbeddedRendezvous()
 	if err != nil {
 		return "", nil, err
 	}
@@ -54,7 +59,7 @@ func lanRendezvousForCode(code string) (string, func(), error) {
 		return "", nil, fmt.Errorf("code %q has no nameplate", code)
 	}
 
-	ts, err := startRendezvousServer(":0")
+	ts, err := startEmbeddedRendezvous()
 	if err != nil {
 		return "", nil, err
 	}
@@ -65,6 +70,16 @@ func lanRendezvousForCode(code string) (string, func(), error) {
 	}
 
 	return advertisedRendezvous(ts)
+}
+
+// startEmbeddedRendezvous starts the embedded rendezvous server on the
+// default port when it is free, and on a random port otherwise.
+func startEmbeddedRendezvous() (*rendezvousservertest.TestServer, error) {
+	if ts, err := startRendezvousServer(fmt.Sprintf(":%d", defaultRendezvousPort)); err == nil {
+		return ts, nil
+	}
+
+	return startRendezvousServer(":0")
 }
 
 // advertisedRendezvous announces an embedded rendezvous server via mDNS
@@ -177,17 +192,26 @@ func advertiseRendezvous(port int) (func(), error) {
 // and returns the url of the first one that knows the given nameplate,
 // or "" when none does.
 func discoverRendezvous(nameplate string) string {
+	url, _ := discoverRendezvousDetail(nameplate)
+	return url
+}
+
+// discoverRendezvousDetail is discoverRendezvous that also reports how
+// many local servers the browse saw, so callers can tell an empty
+// network from servers that none answered for the nameplate.
+func discoverRendezvousDetail(nameplate string) (url string, serversSeen int) {
 	if nameplate == "" {
-		return ""
+		return "", 0
 	}
 
-	for _, url := range browseRendezvousURLs() {
+	urls := browseRendezvousURLs()
+	for _, url := range urls {
 		if rendezvousHasNameplate(url, nameplate) {
-			return url
+			return url, len(urls)
 		}
 	}
 
-	return ""
+	return "", len(urls)
 }
 
 // browseRendezvousURLs returns the urls of every rendezvous server

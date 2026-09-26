@@ -59,10 +59,15 @@ func recvAction(cmd *cobra.Command, args []string) {
 	// network that knows this code before falling back to the public one
 	if relayURL != "" {
 		fmt.Printf("Rendezvous: %s (relay)\n", relayURL)
-	} else if url := discoverRendezvous(codeNameplate(code)); url != "" {
+	} else if url, seen := discoverRendezvousDetail(codeNameplate(code)); url != "" {
 		c.RendezvousURL = url
 		fmt.Printf("Rendezvous: %s (local network, found via mDNS)\n", url)
 	} else {
+		if seen > 0 {
+			fmt.Fprintf(os.Stderr, "note: %d local rendezvous server(s) found via mDNS, but none answered for nameplate %s (sender exited, or its firewall blocks the connection)\n", seen, codeNameplate(code))
+		} else {
+			fmt.Fprintf(os.Stderr, "note: no rendezvous server found on the local network via mDNS\n")
+		}
 		fmt.Printf("Rendezvous: %s (public relay)\n", wormhole.DefaultRendezvousURL)
 	}
 

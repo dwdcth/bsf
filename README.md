@@ -124,6 +124,17 @@ personal/LAN use — it has no nameplate expiry or rate limiting, so don't expos
 the internet. mDNS discovery requires multicast to work between the two machines
 (same subnet or a multicast-forwarding network).
 
+Firewall note for senders: the embedded rendezvous server tries to bind tcp port
+`40009` (falling back to a random port when several senders run on one machine), and
+mDNS itself uses udp `5353`. On machines running a firewall, allow both:
+
+```
+ufw allow 5353/udp && ufw allow 40009/tcp     # or the firewalld equivalent
+```
+
+A receiver that falls back to the public relay prints a note explaining what the
+mDNS discovery step saw, which tells you which side to fix.
+
 
 ## Building the CLI tool
 
