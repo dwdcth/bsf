@@ -28,7 +28,26 @@ var (
 	disableClipboard bool
 	relayMode        bool
 	parallelStreams  int
+	parallelExplicit bool
 )
+
+// smallFileSingleStreamThreshold is the size under which a send uses a
+// single stream when --parallel was not set explicitly: n transit
+// handshakes cost more than they save on a transfer this short, and one
+// stream is kinder to half-duplex wifi too.
+const smallFileSingleStreamThreshold = 8 << 20
+
+// effectiveParallel returns the stream count to offer: the user's
+// explicit choice wins, otherwise small transfers go single-stream.
+func effectiveParallel(totalBytes int64) int {
+	if parallelExplicit {
+		return parallelStreams
+	}
+	if totalBytes < smallFileSingleStreamThreshold {
+		return 1
+	}
+	return parallelStreams
+}
 
 func sendCommand() *cobra.Command {
 	cmd := cobra.Command{
@@ -46,6 +65,8 @@ func sendCommand() *cobra.Command {
 			if err != nil {
 				bail("Failed to read %s: %s", args[0], err)
 			}
+
+			parallelExplicit = cmd.Flags().Changed("parallel")
 
 			if stat.IsDir() {
 				sendDir(args[0])
@@ -338,13 +359,20 @@ func sendFile(filename string) {
 		}))
 	}
 
+	size := int64(-1)
+	if fi, err := f.Stat(); err == nil {
+		size = fi.Size()
+	}
+
+	streams := effectiveParallel(size)
+
 	session, err := startSendSession(func(c *wormhole.Client, ctx context.Context, code string) (string, chan wormhole.SendResult, error) {
 		opts := args
 		if code != "" {
 			opts = append(opts, wormhole.WithCode(code))
 		}
-		if parallelStreams > 1 {
-			opts = append(opts, wormhole.WithParallel(parallelStreams))
+		if streams > 1 {
+			opts = append(opts, wormhole.WithParallel(streams))
 		}
 		return c.SendFile(ctx, filepath.Base(filename), f, opts...)
 	})
@@ -379,6 +407,7 @@ func sendDir(dirpath string) {
 	prefix, dirname := filepath.Split(dirpath)
 
 	var entries []wormhole.DirectoryEntry
+	var totalBytes int64
 
 	filepath.Walk(dirpath, func(path string, info os.FileInfo, err error) error {
 		if info.IsDir() {
@@ -390,6 +419,7 @@ func sendDir(dirpath string) {
 		}
 
 		relPath := strings.TrimPrefix(path, prefix)
+		totalBytes += info.Size()
 
 		entries = append(entries, wormhole.DirectoryEntry{
 			Path: relPath,
@@ -422,13 +452,15 @@ func sendDir(dirpath string) {
 			}
 		}))
 	}
+	streams := effectiveParallel(totalBytes)
+
 	session, err := startSendSession(func(c *wormhole.Client, ctx context.Context, code string) (string, chan wormhole.SendResult, error) {
 		opts := args
 		if code != "" {
 			opts = append(opts, wormhole.WithCode(code))
 		}
-		if parallelStreams > 1 {
-			opts = append(opts, wormhole.WithParallel(parallelStreams))
+		if streams > 1 {
+			opts = append(opts, wormhole.WithParallel(streams))
 		}
 		return c.SendDirectory(ctx, dirname, entries, opts...)
 	})

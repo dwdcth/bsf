@@ -57,7 +57,7 @@ bsf receive
 ## 特性一览
 
 - **口令码自动复制剪贴板**：依次尝试 `pbcopy`（macOS）、`clip`（Windows）、`wl-copy`（Wayland）、`xclip` / `xsel`（X11）等剪贴板工具；都没有时（例如纯 ssh 会话）回退 OSC 52 终端转义序列，由终端模拟器自己完成复制，kitty、iTerm2、Windows Terminal、WezTerm、alacritty、foot 均支持（tmux 内需开启 `set-clipboard`）。`--disable-clipboard` 可关闭。接收到的文本消息同样会复制到剪贴板（上限 1 MiB）。
-- **多流并行传输**：`--parallel`（默认 4，发送 / 接收均可用）把文件切分为连续块，每条流独立派生记录密钥；文件和目录都支持，仅限 bsf ↔ bsf，对 Python 客户端自动回退标准单流。
+- **多流并行传输**：`--parallel`（默认 4，发送 / 接收均可用）把文件切分为连续块，每条流独立派生记录密钥；文件和目录都支持，仅限 bsf ↔ bsf，对 Python 客户端自动回退标准单流。小于 8 MiB 的传输自动使用单流（多流握手开销不划算，单流对 WiFi 也更友好）；显式指定 `--parallel` 时始终尊重所给值。
 - **断线自动续传**：transit 连接中断后双方保留状态，重连后从各流断点继续，不重发已传数据，最终 ack 校验整个文件的 sha256。
 - **Shell 补全**：可补全口令码本身（nameplate 与奇偶词表），见[下文](#shell-补全)。
 - 其他：进度条（`--hide-progress` 关闭）、`--verify` 校验串确认、`--qr` 二维码显示发送码（实验性）、`bsf server` 独立启动局域网 rendezvous 服务器、`--relay` / `--relay-url` 走公网。
@@ -71,7 +71,7 @@ bsf receive
 | `--text string` | 发送文本而非文件，`-` 从 stdin 读取 |
 | `--code string` | 自定义口令码 |
 | `-c, --code-length int` | 口令码长度（词数） |
-| `--parallel int` | 并行流数量，默认 4（仅 bsf 接收端支持） |
+| `--parallel int` | 并行流数量，默认 4；小于 8 MiB 自动单流（仅 bsf 接收端支持） |
 | `--relay` | 同时把口令码注册到公网中继 |
 | `-v, --verify` | 显示校验串并等待对端确认 |
 | `--qr` | 以二维码显示发送码（实验性） |

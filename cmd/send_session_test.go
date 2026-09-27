@@ -228,3 +228,32 @@ func TestDualSendRelayUnreachableFallsBackToLAN(t *testing.T) {
 		t.Fatalf("send failed: %s", res.Error)
 	}
 }
+
+func TestEffectiveParallel(t *testing.T) {
+	defer func(p int, e bool) { parallelStreams, parallelExplicit = p, e }(parallelStreams, parallelExplicit)
+
+	// default: small transfers go single stream, big ones parallel
+	parallelStreams, parallelExplicit = 4, false
+	if got := effectiveParallel(1 << 20); got != 1 {
+		t.Errorf("small file: got %d streams, want 1", got)
+	}
+	if got := effectiveParallel(smallFileSingleStreamThreshold); got != 4 {
+		t.Errorf("threshold-size file: got %d streams, want 4", got)
+	}
+	if got := effectiveParallel(32 << 20); got != 4 {
+		t.Errorf("large file: got %d streams, want 4", got)
+	}
+	if got := effectiveParallel(-1); got != 1 {
+		t.Errorf("unknown size: got %d streams, want 1", got)
+	}
+
+	// an explicit --parallel always wins
+	parallelStreams, parallelExplicit = 1, true
+	if got := effectiveParallel(32 << 20); got != 1 {
+		t.Errorf("explicit 1 on large file: got %d streams, want 1", got)
+	}
+	parallelStreams, parallelExplicit = 8, true
+	if got := effectiveParallel(1 << 10); got != 8 {
+		t.Errorf("explicit 8 on small file: got %d streams, want 8", got)
+	}
+}
