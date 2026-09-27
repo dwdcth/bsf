@@ -106,7 +106,16 @@ func recvAction(cmd *cobra.Command, args []string) {
 		}
 	case wormhole.TransferFile:
 		var acceptFile bool
-		destName := filepath.Join(outDir, msg.Name)
+
+		// the offer filename is peer controlled; keep it a single
+		// component so a malicious sender cannot plant the payload
+		// outside the receive directory (or overwrite dotfiles there)
+		name := filepath.Base(msg.Name)
+		if name == "" || name == "." || name == ".." || strings.ContainsAny(name, `\/`) {
+			msg.Reject()
+			bail("bad filename in offer: %q", msg.Name)
+		}
+		destName := filepath.Join(outDir, name)
 		if _, err := os.Stat(destName); err == nil && !acceptAll {
 			msg.Reject()
 			errf("Error refusing to overwrite existing '%s'", destName)
@@ -138,7 +147,7 @@ func recvAction(cmd *cobra.Command, args []string) {
 				if err := os.MkdirAll(outDir, 0o777); err != nil {
 					bail("Failed to create receive directory %s: %s", outDir, err)
 				}
-				f, err := ioutil.TempFile(outDir, fmt.Sprintf("%s.tmp", msg.Name))
+				f, err := ioutil.TempFile(outDir, fmt.Sprintf("%s.tmp", name))
 				if err != nil {
 					bail("Failed to create tempfile: %s", err)
 				}
@@ -304,7 +313,7 @@ func recvAction(cmd *cobra.Command, args []string) {
 						bail("Failes to calculate file path ABS: %s", err)
 					}
 
-					if !strings.HasPrefix(p, dirName) {
+					if p != dirName && !strings.HasPrefix(p, dirName+string(os.PathSeparator)) {
 						bail("Dangerous filename detected: %s", zf.Name)
 					}
 
@@ -319,7 +328,9 @@ func recvAction(cmd *cobra.Command, args []string) {
 						bail("Failed to mkdirall %s: %s", dir, err)
 					}
 
-					f, err := os.OpenFile(p, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, zf.Mode())
+					// strip setuid/setgid/sticky: the sender has no
+					// business choosing those for files it hands over
+					f, err := os.OpenFile(p, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, zf.Mode()&0o777)
 					if err != nil {
 						bail("Failed to open %s: %s", p, err)
 					}
