@@ -67,6 +67,7 @@ func Execute() error {
 	// bare "wormhole-william CODE" form too
 	rootCmd.Flags().BoolVarP(&verify, "verify", "v", false, "display verification string (and wait for approval)")
 	rootCmd.Flags().BoolVar(&hideProgressBar, "hide-progress", false, "suppress progress-bar display")
+	rootCmd.Flags().IntVar(&parallelStreams, "parallel", 4, "number of parallel transit streams to use when the sender offers them")
 	rootCmd.Flags().BoolVarP(&acceptAll, "yes", "y", false, "accept the transfer without prompting and overwrite existing files")
 	rootCmd.Flags().StringVarP(&outDir, "out", "o", ".", "directory to receive into")
 	rootCmd.Flags().BoolVar(&disableClipboard, "disable-clipboard", false, "do not copy received text to the system clipboard")

@@ -35,6 +35,12 @@ type Client struct {
 
 	// TransitRelayAddress is the host:port address to offer
 	// to use for file transfers where direct connections are unavailable.
+	// DisableTransitRelay keeps the transfer off the public transit
+	// relay entirely: no relay connection is dialed and the transit
+	// message carries no relay hints, so the file data can never leave
+	// the local network.
+	DisableTransitRelay bool
+
 	// If empty, DefaultTransitRelayAddress will be used.
 	TransitRelayAddress string
 
@@ -95,6 +101,9 @@ func (c *Client) wordCount() int {
 }
 
 func (c *Client) relayAddr() string {
+	if c.DisableTransitRelay {
+		return ""
+	}
 	if c.TransitRelayAddress != "" {
 		return c.TransitRelayAddress
 	}

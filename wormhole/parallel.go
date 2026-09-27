@@ -599,7 +599,9 @@ func recvAllStreams(ctx context.Context, cryptors []*transportCryptor, attempt i
 func dialDirectAddrs(ctx context.Context, transport *fileTransport, addr string, n int) ([]net.Conn, error) {
 	conns := make([]net.Conn, 0, n)
 	for i := 0; i < n; i++ {
-		var d net.Dialer
+		// a hint that blackholes must not stall the transfer for
+		// minutes on the default tcp timeout
+		d := net.Dialer{Timeout: 3 * time.Second}
 		conn, err := d.DialContext(ctx, "tcp", addr)
 		if err != nil {
 			for _, c := range conns {
@@ -685,6 +687,13 @@ func (m *IncomingMessage) ReceiveFileInto(ctx context.Context, dest io.WriterAt,
 	}
 
 	conn1, addr, perr := probeDirectAddr(ctx, p.transport, &p.peerTransit)
+	if perr != nil {
+		// a wifi blip can fail every probe at once; the sender is
+		// usually still there, so try once more before deciding there
+		// is no direct path
+		time.Sleep(time.Second)
+		conn1, addr, perr = probeDirectAddr(ctx, p.transport, &p.peerTransit)
+	}
 	if perr != nil {
 		// no direct path (both peers behind hard NAT): fall back to a
 		// single relay stream written sequentially

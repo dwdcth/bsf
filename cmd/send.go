@@ -155,6 +155,7 @@ func startSendSession(run func(c *wormhole.Client, ctx context.Context, code str
 		ctx, cancel := context.WithCancel(context.Background())
 		c := newClient()
 		c.RendezvousURL = url
+		c.DisableTransitRelay = true
 		code, status, err := run(&c, ctx, codeFlag)
 		if err != nil {
 			cancel()
@@ -182,6 +183,7 @@ func startSendSession(run func(c *wormhole.Client, ctx context.Context, code str
 	ctx, cancel := context.WithCancel(context.Background())
 	c := newClient()
 	c.RendezvousURL = url
+	c.DisableTransitRelay = true
 	_, lanStatus, err := run(&c, ctx, session.code)
 	if err != nil {
 		cancel()
