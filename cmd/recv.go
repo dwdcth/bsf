@@ -116,84 +116,86 @@ func recvAction(cmd *cobra.Command, args []string) {
 			bail("bad filename in offer: %q", msg.Name)
 		}
 		destName := filepath.Join(outDir, name)
-		if _, err := os.Stat(destName); err == nil && !acceptAll {
+		_, statErr := os.Stat(destName)
+		if statErr != nil && !os.IsNotExist(statErr) && !acceptAll {
 			msg.Reject()
-			errf("Error refusing to overwrite existing '%s'", destName)
-		} else if !os.IsNotExist(err) && !acceptAll {
-			msg.Reject()
-			errf("Error stat'ing existing '%s'\n", destName)
-		} else {
-			if acceptAll {
-				acceptFile = true
-			} else {
-				reader := bufio.NewReader(os.Stdin)
-				fmt.Printf("Receiving file (%s) into: %s\n", formatBytes(msg.TransferBytes64), destName)
-				fmt.Print("ok? (y/N):")
+			bail("Error stat'ing existing '%s'", destName)
+		}
 
-				line, err := reader.ReadString('\n')
-				if err != nil {
-					errf("Error reading from stdin: %s\n", err)
-				}
-				line = strings.TrimSpace(line)
-				if line == "y" {
-					acceptFile = true
-				}
+		if acceptAll {
+			acceptFile = true
+		} else {
+			reader := bufio.NewReader(os.Stdin)
+			fmt.Printf("Receiving file (%s) into: %s\n", formatBytes(msg.TransferBytes64), destName)
+			if statErr == nil {
+				fmt.Print("file exists, overwrite? (y/N):")
+			} else {
+				fmt.Print("ok? (y/N):")
 			}
 
-			if !acceptFile {
-				msg.Reject()
-				bail("transfer rejected")
+			line, err := reader.ReadString('\n')
+			if err != nil {
+				errf("Error reading from stdin: %s\n", err)
+			}
+			line = strings.TrimSpace(line)
+			if line == "y" {
+				acceptFile = true
+			}
+		}
+
+		if !acceptFile {
+			msg.Reject()
+			bail("transfer rejected")
+		} else {
+			if err := os.MkdirAll(outDir, 0o777); err != nil {
+				bail("Failed to create receive directory %s: %s", outDir, err)
+			}
+			f, err := ioutil.TempFile(outDir, fmt.Sprintf("%s.tmp", name))
+			if err != nil {
+				bail("Failed to create tempfile: %s", err)
+			}
+
+			if msg.ParallelStreams() > 1 {
+				// multi-stream transfer with automatic resume:
+				// progress comes from a callback instead of the
+				// io.Reader proxy
+				var bar *pb.ProgressBar
+				progressFn := func(received, total int64) {}
+				if !hideProgressBar {
+					bar = pb.Full.Start64(msg.TransferBytes64)
+					bar.Set(pb.Bytes, true)
+					bar.Set(pb.SIBytesPrefix, true)
+					progressFn = func(received, total int64) {
+						bar.SetCurrent(received)
+					}
+				}
+
+				err = msg.ReceiveFileInto(ctx, f, progressFn)
+				if bar != nil {
+					bar.Finish()
+				}
+				if err != nil {
+					os.Remove(f.Name())
+					bail("Receive file error: %s", err)
+				}
 			} else {
-				if err := os.MkdirAll(outDir, 0o777); err != nil {
-					bail("Failed to create receive directory %s: %s", outDir, err)
-				}
-				f, err := ioutil.TempFile(outDir, fmt.Sprintf("%s.tmp", name))
+				proxyReader := pbProxyReader(msg, msg.TransferBytes64)
+
+				_, err = io.Copy(f, proxyReader)
 				if err != nil {
-					bail("Failed to create tempfile: %s", err)
+					os.Remove(f.Name())
+					bail("Receive file error: %s", err)
 				}
 
-				if msg.ParallelStreams() > 1 {
-					// multi-stream transfer with automatic resume:
-					// progress comes from a callback instead of the
-					// io.Reader proxy
-					var bar *pb.ProgressBar
-					progressFn := func(received, total int64) {}
-					if !hideProgressBar {
-						bar = pb.Full.Start64(msg.TransferBytes64)
-						bar.Set(pb.Bytes, true)
-						bar.Set(pb.SIBytesPrefix, true)
-						progressFn = func(received, total int64) {
-							bar.SetCurrent(received)
-						}
-					}
+				proxyReader.Close()
+			}
 
-					err = msg.ReceiveFileInto(ctx, f, progressFn)
-					if bar != nil {
-						bar.Finish()
-					}
-					if err != nil {
-						os.Remove(f.Name())
-						bail("Receive file error: %s", err)
-					}
-				} else {
-					proxyReader := pbProxyReader(msg, msg.TransferBytes64)
+			tmpName := f.Name()
+			f.Close()
 
-					_, err = io.Copy(f, proxyReader)
-					if err != nil {
-						os.Remove(f.Name())
-						bail("Receive file error: %s", err)
-					}
-
-					proxyReader.Close()
-				}
-
-				tmpName := f.Name()
-				f.Close()
-
-				err = os.Rename(tmpName, destName)
-				if err != nil {
-					bail("Rename %s to %s failed: %s", tmpName, destName, err)
-				}
+			err = os.Rename(tmpName, destName)
+			if err != nil {
+				bail("Rename %s to %s failed: %s", tmpName, destName, err)
 			}
 		}
 	case wormhole.TransferDirectory:
@@ -217,136 +219,138 @@ func recvAction(cmd *cobra.Command, args []string) {
 			bail("Bad Directory name %s", msg.Name)
 		}
 
-		if _, err := os.Stat(dirName); err == nil && !acceptAll {
+		_, statErr := os.Stat(dirName)
+		if statErr != nil && !os.IsNotExist(statErr) && !acceptAll {
 			msg.Reject()
-			errf("Error refusing to overwrite existing '%s'", msg.Name)
-		} else if !os.IsNotExist(err) && !acceptAll {
-			msg.Reject()
-			errf("Error stat'ing existing '%s'\n", msg.Name)
-		} else {
-			if acceptAll {
-				acceptDir = true
-				if err := os.MkdirAll(dirName, 0o777); err != nil {
-					bail("Mkdir error for %s: %s\n", dirName, err)
-				}
-			} else {
-				reader := bufio.NewReader(os.Stdin)
-				fmt.Printf("Receiving directory (%s) into: %s\n", formatBytes(msg.TransferBytes64), msg.Name)
-				fmt.Printf("%d files, %s (uncompressed)\n", msg.FileCount, formatBytes(msg.UncompressedBytes64))
-				fmt.Print("ok? (y/N):")
+			bail("Error stat'ing existing '%s'", msg.Name)
+		}
 
-				line, err := reader.ReadString('\n')
-				if err != nil {
-					errf("Error reading from stdin: %s\n", err)
-				}
-				line = strings.TrimSpace(line)
-				if line == "y" {
-					acceptDir = true
-				}
+		if acceptAll {
+			acceptDir = true
+			if err := os.MkdirAll(dirName, 0o777); err != nil {
+				bail("Mkdir error for %s: %s\n", dirName, err)
+			}
+		} else {
+			reader := bufio.NewReader(os.Stdin)
+			fmt.Printf("Receiving directory (%s) into: %s\n", formatBytes(msg.TransferBytes64), msg.Name)
+			fmt.Printf("%d files, %s (uncompressed)\n", msg.FileCount, formatBytes(msg.UncompressedBytes64))
+			if statErr == nil {
+				fmt.Print("directory exists, overwrite? (y/N):")
+			} else {
+				fmt.Print("ok? (y/N):")
 			}
 
-			if !acceptDir {
-				msg.Reject()
-				bail("transfer rejected")
+			line, err := reader.ReadString('\n')
+			if err != nil {
+				errf("Error reading from stdin: %s\n", err)
+			}
+			line = strings.TrimSpace(line)
+			if line == "y" {
+				acceptDir = true
+			}
+		}
+
+		if !acceptDir {
+			msg.Reject()
+			bail("transfer rejected")
+		} else {
+			if err := os.Mkdir(dirName, 0o777); err != nil && !os.IsExist(err) {
+				bail("Mkdir error for %s: %s\n", dirName, err)
+			}
+
+			tmpFile, err := ioutil.TempFile(wd, msg.Name+".zip.tmp")
+			if err != nil {
+				bail("Failed to create tempfile: %s", err)
+			}
+
+			defer tmpFile.Close()
+			defer os.Remove(tmpFile.Name())
+
+			var n int64
+			if msg.ParallelStreams() > 1 {
+				// multi-stream transfer with automatic resume:
+				// progress comes from a callback instead of the
+				// io.Reader proxy
+				var bar *pb.ProgressBar
+				progressFn := func(received, total int64) {}
+				if !hideProgressBar {
+					bar = pb.Full.Start64(msg.TransferBytes64)
+					bar.Set(pb.Bytes, true)
+					bar.Set(pb.SIBytesPrefix, true)
+					progressFn = func(received, total int64) {
+						n = received
+						bar.SetCurrent(received)
+					}
+				}
+
+				err = msg.ReceiveFileInto(ctx, tmpFile, progressFn)
+				if bar != nil {
+					bar.Finish()
+				}
+				if err != nil {
+					os.Remove(tmpFile.Name())
+					bail("Receive file error: %s", err)
+				}
+				if n == 0 {
+					n = msg.TransferBytes64
+				}
 			} else {
-				if err := os.Mkdir(dirName, 0o777); err != nil && !os.IsExist(err) {
-					bail("Mkdir error for %s: %s\n", dirName, err)
-				}
+				proxyReader := pbProxyReader(msg, msg.TransferBytes64)
 
-				tmpFile, err := ioutil.TempFile(wd, msg.Name+".zip.tmp")
+				copied, err := io.Copy(tmpFile, proxyReader)
 				if err != nil {
-					bail("Failed to create tempfile: %s", err)
+					os.Remove(tmpFile.Name())
+					bail("Receive file error: %s", err)
 				}
 
-				defer tmpFile.Close()
-				defer os.Remove(tmpFile.Name())
+				proxyReader.Close()
+				n = copied
+			}
 
-				var n int64
-				if msg.ParallelStreams() > 1 {
-					// multi-stream transfer with automatic resume:
-					// progress comes from a callback instead of the
-					// io.Reader proxy
-					var bar *pb.ProgressBar
-					progressFn := func(received, total int64) {}
-					if !hideProgressBar {
-						bar = pb.Full.Start64(msg.TransferBytes64)
-						bar.Set(pb.Bytes, true)
-						bar.Set(pb.SIBytesPrefix, true)
-						progressFn = func(received, total int64) {
-							n = received
-							bar.SetCurrent(received)
-						}
-					}
+			zr, err := zip.NewReader(tmpFile, n)
+			if err != nil {
+				bail("Read zip error: %s", err)
+			}
 
-					err = msg.ReceiveFileInto(ctx, tmpFile, progressFn)
-					if bar != nil {
-						bar.Finish()
-					}
-					if err != nil {
-						os.Remove(tmpFile.Name())
-						bail("Receive file error: %s", err)
-					}
-					if n == 0 {
-						n = msg.TransferBytes64
-					}
-				} else {
-					proxyReader := pbProxyReader(msg, msg.TransferBytes64)
-
-					copied, err := io.Copy(tmpFile, proxyReader)
-					if err != nil {
-						os.Remove(tmpFile.Name())
-						bail("Receive file error: %s", err)
-					}
-
-					proxyReader.Close()
-					n = copied
-				}
-
-				zr, err := zip.NewReader(tmpFile, n)
+			for _, zf := range zr.File {
+				p, err := filepath.Abs(filepath.Join(dirName, zf.Name))
 				if err != nil {
-					bail("Read zip error: %s", err)
+					bail("Failes to calculate file path ABS: %s", err)
 				}
 
-				for _, zf := range zr.File {
-					p, err := filepath.Abs(filepath.Join(dirName, zf.Name))
-					if err != nil {
-						bail("Failes to calculate file path ABS: %s", err)
-					}
-
-					if p != dirName && !strings.HasPrefix(p, dirName+string(os.PathSeparator)) {
-						bail("Dangerous filename detected: %s", zf.Name)
-					}
-
-					rc, err := zf.Open()
-					if err != nil {
-						bail("Failed to open file in zip: %s %s", zf.Name, err)
-					}
-
-					dir := filepath.Dir(p)
-					err = os.MkdirAll(dir, 0777)
-					if err != nil {
-						bail("Failed to mkdirall %s: %s", dir, err)
-					}
-
-					// strip setuid/setgid/sticky: the sender has no
-					// business choosing those for files it hands over
-					f, err := os.OpenFile(p, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, zf.Mode()&0o777)
-					if err != nil {
-						bail("Failed to open %s: %s", p, err)
-					}
-
-					_, err = io.Copy(f, rc)
-					if err != nil {
-						bail("Failed to write to %s: %s", p, err)
-					}
-
-					err = f.Close()
-					if err != nil {
-						bail("Error closing %s: %s", p, err)
-					}
-
-					rc.Close()
+				if p != dirName && !strings.HasPrefix(p, dirName+string(os.PathSeparator)) {
+					bail("Dangerous filename detected: %s", zf.Name)
 				}
+
+				rc, err := zf.Open()
+				if err != nil {
+					bail("Failed to open file in zip: %s %s", zf.Name, err)
+				}
+
+				dir := filepath.Dir(p)
+				err = os.MkdirAll(dir, 0777)
+				if err != nil {
+					bail("Failed to mkdirall %s: %s", dir, err)
+				}
+
+				// strip setuid/setgid/sticky: the sender has no
+				// business choosing those for files it hands over
+				f, err := os.OpenFile(p, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, zf.Mode()&0o777)
+				if err != nil {
+					bail("Failed to open %s: %s", p, err)
+				}
+
+				_, err = io.Copy(f, rc)
+				if err != nil {
+					bail("Failed to write to %s: %s", p, err)
+				}
+
+				err = f.Close()
+				if err != nil {
+					bail("Error closing %s: %s", p, err)
+				}
+
+				rc.Close()
 			}
 		}
 	}
