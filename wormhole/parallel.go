@@ -168,6 +168,27 @@ func sendParallelFile(ctx context.Context, collector *msgCollector, clientProto 
 	}
 
 	attempt := 0
+
+	// the pump loop only touches the atomic progress counter; report
+	// on a ticker so the caller sees smooth progress instead of a jump
+	// to 100% at the end
+	if progressFn != nil {
+		done := make(chan struct{})
+		defer close(done)
+		go func() {
+			ticker := time.NewTicker(200 * time.Millisecond)
+			defer ticker.Stop()
+			for {
+				select {
+				case <-done:
+					return
+				case <-ticker.C:
+					reportProgress()
+				}
+			}
+		}()
+	}
+
 	for {
 		if err := sendStreamHellos(conns, transitKey); err != nil {
 			return err

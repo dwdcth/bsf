@@ -400,10 +400,33 @@ func sendDir(dirpath string) {
 		return nil
 	})
 
+	var bar *pb.ProgressBar
+
+	args := []wormhole.SendOption{}
+	if !hideProgressBar {
+		// progress tracks the compressed zip size; the bar starts from
+		// the uncompressed total and corrects itself on the first
+		// callback once the zip exists
+		args = append(args, wormhole.WithProgress(func(sentBytes int64, totalZipBytes int64) {
+			if bar == nil {
+				bar = pb.Full.Start64(totalZipBytes)
+				bar.Set(pb.Bytes, true)
+				bar.Set(pb.SIBytesPrefix, true)
+			}
+			bar.SetCurrent(sentBytes)
+
+			if sentBytes == totalZipBytes {
+				bar.Finish()
+			}
+		}))
+	}
 	session, err := startSendSession(func(c *wormhole.Client, ctx context.Context, code string) (string, chan wormhole.SendResult, error) {
-		opts := []wormhole.SendOption{}
+		opts := args
 		if code != "" {
 			opts = append(opts, wormhole.WithCode(code))
+		}
+		if parallelStreams > 1 {
+			opts = append(opts, wormhole.WithParallel(parallelStreams))
 		}
 		return c.SendDirectory(ctx, dirname, entries, opts...)
 	})
