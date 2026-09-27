@@ -181,13 +181,16 @@ func TestSendTextCopiesCodeToClipboard(t *testing.T) {
 		sendText()
 	}()
 
-	// wait for the fake clipboard helper to receive the code
+	// wait for the fake clipboard helper to receive the code; the
+	// helper creates the sink before cat writes it, so keep polling
+	// while it is still empty
 	var code string
 	deadline := time.Now().Add(5 * time.Second)
 	for time.Now().Before(deadline) {
 		if b, err := os.ReadFile(sink); err == nil {
-			code = strings.TrimSpace(string(b))
-			break
+			if code = strings.TrimSpace(string(b)); code != "" {
+				break
+			}
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
