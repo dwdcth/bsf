@@ -9,6 +9,7 @@ import (
 	"reflect"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	"github.com/dwdcth/bsf/internal/crypto"
 	"github.com/dwdcth/bsf/rendezvous/internal/msgs"
@@ -417,6 +418,9 @@ const (
 )
 
 // Close sends mood to server and then tears down the connection.
+// The handshake is bounded: when the peer or the server is already
+// gone the ack never arrives, and waiting forever would hang callers
+// on their way out (a rejected receive used to never exit).
 func (c *Client) Close(ctx context.Context, mood Mood) error {
 	if mood == "" {
 		mood = Happy
@@ -425,6 +429,9 @@ func (c *Client) Close(ctx context.Context, mood Mood) error {
 	if c.wsClient == nil {
 		return errors.New("Close called on non-open rendezvous connection")
 	}
+
+	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
 
 	defer func() {
 		if c.wsClient != nil {

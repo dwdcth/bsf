@@ -48,6 +48,8 @@ var (
 	relayURL        string
 	verify          bool
 	hideProgressBar bool
+	acceptAll       bool
+	outDir          string
 
 	versionTemplate = `{{with .Name}}{{printf "%s " .}}{{end}}{{printf "%s" .Version}}
 `
@@ -65,6 +67,9 @@ func Execute() error {
 	// bare "wormhole-william CODE" form too
 	rootCmd.Flags().BoolVarP(&verify, "verify", "v", false, "display verification string (and wait for approval)")
 	rootCmd.Flags().BoolVar(&hideProgressBar, "hide-progress", false, "suppress progress-bar display")
+	rootCmd.Flags().BoolVarP(&acceptAll, "yes", "y", false, "accept the transfer without prompting and overwrite existing files")
+	rootCmd.Flags().StringVarP(&outDir, "out", "o", ".", "directory to receive into")
+	rootCmd.Flags().BoolVar(&disableClipboard, "disable-clipboard", false, "do not copy received text to the system clipboard")
 
 	rootCmd.AddCommand(recvCommand())
 	rootCmd.AddCommand(sendCommand())
