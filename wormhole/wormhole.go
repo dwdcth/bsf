@@ -49,6 +49,23 @@ type Client struct {
 	// than one. Zero or one means the standard single stream protocol.
 	ParallelStreams int
 
+	// EnableICE turns on UDP hole punching: the transit message carries
+	// ICE credentials and candidates (json field "bsf-ice"), and a
+	// punched UDP path carrying QUIC is tried between the direct TCP
+	// connection and the relay. The zero value keeps the legacy
+	// TCP/relay-only behavior.
+	EnableICE bool
+
+	// STUNServers lists "stun:host:port" endpoints used to gather
+	// server-reflexive candidates. Empty picks the endpoint the peer
+	// advertised (a self-hosted rendezvous doubling as STUN), falling
+	// back to public servers when relays are allowed at all.
+	STUNServers []string
+
+	// WSRelayURL is a wss:// transit relay to offer alongside the TCP
+	// relay (ability "relay-ws-v1"). Empty offers no websocket relay.
+	WSRelayURL string
+
 	// PassPhraseComponentLength is the number of words to use
 	// when generating a passprase. Any value less than 2 will
 	// default to 2.
@@ -287,6 +304,10 @@ type transitHintsV1 struct {
 	Priority float64              `json:"priority"`
 	Type     string               `json:"type"`
 	Hints    []transitHintsV1Hint `json:"hints"`
+
+	// URL carries the wss:// endpoint of a relay-ws-v1 hint (the
+	// hostname/port fields stay empty for that type).
+	URL string `json:"url,omitempty"`
 }
 
 type transitHintsV1Hint struct {
@@ -304,6 +325,12 @@ type transitMsg struct {
 	// Python clients ignore the unknown field and keep using a single
 	// stream.
 	Parallel int `json:"bsf-parallel,omitempty"`
+
+	// ICE carries a full non-trickle ICE description (credentials plus
+	// candidates) for the UDP hole-punch path. A punch is attempted only
+	// when both peers' transit messages carry it; python clients ignore
+	// the unknown field.
+	ICE *iceHint `json:"bsf-ice,omitempty"`
 }
 
 func (m *transitMsg) Type() collectType {

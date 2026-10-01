@@ -44,7 +44,10 @@ Flags:
   -v, --verify              display verification string (and wait for approval)
 
 Global Flags:
+      --ice               attempt UDP hole punching (p2p over QUIC) before falling back to a relay (default true)
       --relay-url string   rendezvous relay to use
+      --stun strings      comma-separated STUN endpoints (stun:host:port) for hole punching
+      --ws-relay string   wss:// websocket transit relay to use as fallback
 
 
 $ bsf receive --help
@@ -64,6 +67,29 @@ Flags:
 Global Flags:
       --relay-url string   rendezvous relay to use
 ```
+
+### UDP hole punching (P2P over QUIC)
+
+When both peers sit behind NATs, bsf first tries to punch a direct UDP
+path: ICE candidates are exchanged over the existing encrypted mailbox
+(no server changes), a STUN server provides the public mapping, and the
+punched path carries QUIC streams — so parallel transfers and automatic
+resume work over it exactly like over TCP. If the punch fails (for
+example double symmetric NAT), the transfer falls back to a relay.
+
+- enabled by default; turn off with `--ice=false` or `BSF_NO_ICE=1`
+- `--stun stun:host:port` (or `BSF_STUN`, comma-separated) overrides the
+  STUN endpoints; by default the receiver follows the endpoint the
+  sender advertised (a self-hosted `bsf server` doubles as STUN), then
+  public servers
+- `--ws-relay wss://...` (or `BSF_WS_RELAY`) adds a websocket fallback
+  relay on port 443 — see `contrib/cloudflare-relay/` for a Cloudflare
+  Worker you can deploy on the free tier (the edge only ever sees
+  PAKE-encrypted ciphertext)
+
+Connection priority, each step falling back to the next: **direct TCP →
+UDP punch (ICE + QUIC) → relay** (websocket relay when configured, else
+the TCP transit relay).
 
 ### CLI tab completion
 
@@ -120,12 +146,52 @@ Use: bsf --relay-url ws://127.0.0.1:40000/ws ...
 Use: bsf --relay-url ws://192.168.31.37:40000/ws ...
 ```
 
+Two companion flags make a self-hosted deployment independent of every
+public service:
+
+- `--stun <addr>` (default `:3478`, empty disables): an embedded STUN
+  server that peers use for UDP hole punching. Discovery advertises it
+  next to the rendezvous, and the sender can also pass it explicitly
+  via `--stun stun:<lan-ip>:3478`.
+- `--transit <addr>` (default off): a standard magic-wormhole TCP transit
+  relay, so a failed punch falls back to your own server instead of the
+  public one.
+
+```
+$ bsf server --addr :40009 --stun :3478 --transit :4001
+Rendezvous server listening on [::]:40009 (advertised via udp broadcast)
+STUN server listening on :3478 (udp)
+Transit relay listening on 127.0.0.1:4001
+...
+      (fallback transit relay: 127.0.0.1:4001)
+      (stun: stun:192.168.31.37:3478)
+```
+
 Then both sides pass `--relay-url ws://<lan-ip>:<port>/ws` (or set `WORMHOLE_RELAY_URL`).
 File transfers connect directly over the LAN (direct-tcp-v1 hints are exchanged first;
 the public transit relay is only a fallback), and text messages only ever touch the
 rendezvous server. Note: this server is a lightweight implementation intended for
 personal/LAN use — it has no nameplate expiry or rate limiting, so don't expose it to the
 internet. Broadcast discovery requires the two machines to share a subnet.
+See also `contrib/cloudflare-relay/`: one Cloudflare Worker that serves
+as a websocket fallback relay (`--ws-relay`) at zero server cost.
+
+### Two deployment shapes
+
+- **With a VPS (all Go services)**: `bsf server --addr :40009 --stun
+  :3478 --transit :4001` provides signaling, STUN and a relay fallback
+  in one command, with no dependency on any public service.
+- **Without a VPS (all Cloudflare)**: the same worker also implements
+  the rendezvous protocol (`/ws`), so with public STUN (bilibili is in
+  the defaults) the full chain works with zero servers of your own:
+
+```sh
+bsf --relay-url wss://<your-domain>/ws --ws-relay wss://<your-domain>/relay send FILE   # sender
+bsf --relay-url wss://<your-domain>/ws --ws-relay wss://<your-domain>/relay CODE        # receiver
+```
+
+Both shapes share the same connection priority: direct TCP → UDP punch
+(QUIC, parallel streams) → relay.
 
 ### Parallel streams and automatic resume
 

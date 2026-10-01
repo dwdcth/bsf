@@ -100,6 +100,20 @@ func newClient() wormhole.Client {
 		RendezvousURL:             relayURL,
 		PassPhraseComponentLength: codeLen,
 		ParallelStreams:           parallelStreams,
+		EnableICE:                 iceEnabled,
+	}
+
+	if stunServers != "" {
+		for _, s := range strings.Split(stunServers, ",") {
+			if s = strings.TrimSpace(s); s != "" {
+				c.STUNServers = append(c.STUNServers, s)
+			}
+		}
+	}
+
+	c.WSRelayURL = wsRelayURL
+	if transitRelayAddr != "" {
+		c.TransitRelayAddress = transitRelayAddr
 	}
 
 	if verify {

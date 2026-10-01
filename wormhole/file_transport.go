@@ -21,6 +21,7 @@ import (
 	"github.com/dwdcth/bsf/internal/crypto"
 	"golang.org/x/crypto/hkdf"
 	"golang.org/x/crypto/nacl/secretbox"
+	"nhooyr.io/websocket"
 )
 
 type fileTransportAck struct {
@@ -170,12 +171,20 @@ func (d *transportCryptor) writeRecord(msg []byte) error {
 	return err
 }
 
-func newFileTransport(transitKey []byte, appID, relayAddr string) *fileTransport {
-	return &fileTransport{
+func newFileTransport(transitKey []byte, appID string, c *Client) *fileTransport {
+	t := &fileTransport{
 		transitKey: transitKey,
 		appID:      appID,
-		relayAddr:  relayAddr,
+		relayAddr:  c.relayAddr(),
 	}
+	if c.EnableICE {
+		t.iceEnabled = true
+		t.stunServers = stunServersFor(c, "")
+	}
+	if c.WSRelayURL != "" && !c.DisableTransitRelay {
+		t.wsRelayURL = c.WSRelayURL
+	}
+	return t
 }
 
 type fileTransport struct {
@@ -186,9 +195,29 @@ type fileTransport struct {
 	appID           string
 	parallelOnce    sync.Once
 	parallelReadyCh chan net.Conn
+
+	iceEnabled  bool
+	stunServers []string
+	ice         *icePath
+	wsRelayURL  string
+	wsRelay     *websocket.Conn
 }
 
+// connectViaRelay falls back to a relay when no direct path exists.
+// The websocket relay runs first — wss on 443 slips past more firewalls
+// and keeps the transfer on relays the sender chose — and the tcp relay
+// only runs when no websocket relay connected.
 func (t *fileTransport) connectViaRelay(otherTransit *transitMsg) (net.Conn, error) {
+	if conn := t.raceRelays(otherTransit, "relay-ws-v1"); conn != nil {
+		return conn, nil
+	}
+	return t.raceRelays(otherTransit, "relay-v1"), nil
+}
+
+// raceRelays dials every hint of one relay kind concurrently; the first
+// connection to complete the transit handshake wins and the rest are
+// cancelled. Returns nil when none succeeds within the window.
+func (t *fileTransport) raceRelays(otherTransit *transitMsg, kind string) net.Conn {
 	cancelFuncs := make(map[string]func())
 
 	successChan := make(chan net.Conn)
@@ -197,38 +226,70 @@ func (t *fileTransport) connectViaRelay(otherTransit *transitMsg) (net.Conn, err
 	var count int
 
 	for _, outerHint := range otherTransit.HintsV1 {
-		if outerHint.Type == "relay-v1" {
-			for _, innerHint := range outerHint.Hints {
-				if innerHint.Type == "direct-tcp-v1" {
-					count++
-					ctx, cancel := context.WithCancel(context.Background())
-					addr := net.JoinHostPort(innerHint.Hostname, strconv.Itoa(innerHint.Port))
-
-					cancelFuncs[addr] = cancel
-
-					go t.connectToRelay(ctx, addr, successChan, failChan)
-				}
-			}
+		if outerHint.Type != kind {
+			continue
 		}
+		if kind == "relay-ws-v1" {
+			if outerHint.URL == "" {
+				continue
+			}
+			count++
+			ctx, cancel := context.WithCancel(context.Background())
+			cancelFuncs["ws "+outerHint.URL] = cancel
+
+			go t.connectToWSRelay(ctx, outerHint.URL, successChan, failChan)
+			continue
+		}
+		for _, innerHint := range outerHint.Hints {
+			if innerHint.Type != "direct-tcp-v1" {
+				continue
+			}
+			count++
+			ctx, cancel := context.WithCancel(context.Background())
+			addr := net.JoinHostPort(innerHint.Hostname, strconv.Itoa(innerHint.Port))
+
+			cancelFuncs[addr] = cancel
+
+			go t.connectToRelay(ctx, addr, successChan, failChan)
+		}
+	}
+
+	if count == 0 {
+		return nil
 	}
 
 	var conn net.Conn
 
-	connectTimeout := time.After(5 * time.Second)
+	// wide enough for the bounded handshake plus a pairing round trip
+	connectTimeout := time.After(relayHandshakeTimeout + 2*time.Second)
 
 	for i := 0; i < count; i++ {
 		select {
 		case <-failChan:
 		case conn = <-successChan:
+			// first relay through the handshake wins; the losers would
+			// only overwrite it. The winner keeps transfering: clear
+			// the handshake deadline.
+			conn.SetDeadline(time.Time{})
+			for _, cancel := range cancelFuncs {
+				cancel()
+			}
+			return conn
 		case <-connectTimeout:
 			for _, cancel := range cancelFuncs {
 				cancel()
 			}
+			return conn
 		}
 	}
 
-	return conn, nil
+	return conn
 }
+
+// relayHandshakeTimeout bounds the transit handshake over a freshly
+// paired relay connection; relays add real latency (the websocket relay
+// crosses the edge twice per message) but must not hang forever.
+var relayHandshakeTimeout = 10 * time.Second
 
 var directConnectTimeout = 5 * time.Second
 
@@ -304,6 +365,10 @@ func (t *fileTransport) connectToRelay(ctx context.Context, addr string, success
 		failChan <- addr
 		return
 	}
+
+	// bound the handshake itself: a relay that pairs but stalls would
+	// otherwise hang an undated read past the race window
+	conn.SetDeadline(time.Now().Add(relayHandshakeTimeout))
 
 	t.directRecvHandshake(ctx, addr, conn, successChan, failChan)
 }
@@ -424,6 +489,27 @@ func (t *fileTransport) makeTransitMsg() (*transitMsg, error) {
 				},
 			},
 		})
+	}
+
+	if t.wsRelayURL != "" {
+		msg.AbilitiesV1 = append(msg.AbilitiesV1, transitAbility{
+			Type: "relay-ws-v1",
+		})
+		msg.HintsV1 = append(msg.HintsV1, transitHintsV1{
+			Type:     "relay-ws-v1",
+			Priority: 1.0,
+			URL:      t.wsRelayURL,
+		})
+	}
+
+	// the UDP hole-punch path: publish the full candidate set gathered
+	// before this message was built (non-trickle ICE); peers that do not
+	// understand "direct-udp-ice-v1"/"bsf-ice" ignore both
+	if h := t.iceHintForTransit(); h != nil {
+		msg.AbilitiesV1 = append(msg.AbilitiesV1, transitAbility{
+			Type: "direct-udp-ice-v1",
+		})
+		msg.ICE = h
 	}
 
 	return &msg, nil
@@ -548,8 +634,8 @@ func (t *fileTransport) waitForRelayPeer(conn net.Conn, cancelCh chan struct{}) 
 // so resumed transfers can keep using it; the caller closes the
 // listener when done.
 func (t *fileTransport) acceptConnections(ctx context.Context, n int) ([]net.Conn, error) {
-	if t.listener == nil {
-		return nil, errors.New("no transit listener")
+	if t.listener == nil && t.relayConn == nil && t.wsRelay == nil {
+		return nil, errors.New("no transit listener or relay")
 	}
 
 	t.parallelOnce.Do(func() {
@@ -566,18 +652,31 @@ func (t *fileTransport) acceptConnections(ctx context.Context, n int) ([]net.Con
 			}()
 		}
 
-		go func() {
-			for {
-				conn, err := t.listener.Accept()
-				if err == io.EOF {
-					return
-				} else if err != nil {
+		if t.wsRelay != nil {
+			go func() {
+				cancelCh := make(chan struct{})
+				conn, waitErr := t.waitForWSRelayPeer(t.wsRelay, cancelCh)
+				if waitErr != nil {
 					return
 				}
+				t.handleIncomingConnection(conn, t.parallelReadyCh, cancelCh)
+			}()
+		}
 
-				go t.handleIncomingConnection(conn, t.parallelReadyCh, make(chan struct{}))
-			}
-		}()
+		if t.listener != nil {
+			go func() {
+				for {
+					conn, err := t.listener.Accept()
+					if err == io.EOF {
+						return
+					} else if err != nil {
+						return
+					}
+
+					go t.handleIncomingConnection(conn, t.parallelReadyCh, make(chan struct{}))
+				}
+			}()
+		}
 	})
 
 	var (
@@ -620,10 +719,44 @@ func (t *fileTransport) acceptConnections(ctx context.Context, n int) ([]net.Con
 	return conns, nil
 }
 
-func (t *fileTransport) acceptConnection(ctx context.Context) (net.Conn, error) {
+func (t *fileTransport) acceptConnection(ctx context.Context, peerTransit *transitMsg) (net.Conn, error) {
 	readyCh := make(chan net.Conn)
 	cancelCh := make(chan struct{})
 	acceptErrCh := make(chan error, 1)
+
+	// UDP hole punch: race the punched QUIC stream against the TCP
+	// listener and relay connection. Only attempted when the peer's
+	// transit message also carries an ice hint.
+	if peerTransit != nil && peerTransit.ICE != nil && t.iceReady() {
+		go func() {
+			iceErr := func() error {
+				if err := t.punchICE(ctx, peerTransit.ICE, true); err != nil {
+					return err
+				}
+				if err := t.listenQUIC(); err != nil {
+					return err
+				}
+				conns, err := t.senderICEStreams(ctx, 1)
+				if err != nil {
+					return err
+				}
+				if len(conns) == 0 {
+					return errors.New("no ice streams")
+				}
+				t.handleIncomingConnection(conns[0], readyCh, cancelCh)
+				return nil
+			}()
+
+			// with no listener and no relay there is nothing left to
+			// race: surface the failure instead of hanging forever
+			if iceErr != nil && t.listener == nil && t.relayConn == nil && t.wsRelay == nil {
+				select {
+				case acceptErrCh <- iceErr:
+				default:
+				}
+			}
+		}()
+	}
 
 	if t.relayConn != nil {
 		go func() {
@@ -632,6 +765,16 @@ func (t *fileTransport) acceptConnection(ctx context.Context) (net.Conn, error) 
 				return
 			}
 			t.handleIncomingConnection(t.relayConn, readyCh, cancelCh)
+		}()
+	}
+
+	if t.wsRelay != nil {
+		go func() {
+			conn, waitErr := t.waitForWSRelayPeer(t.wsRelay, cancelCh)
+			if waitErr != nil {
+				return
+			}
+			t.handleIncomingConnection(conn, readyCh, cancelCh)
 		}()
 	}
 
@@ -656,12 +799,19 @@ func (t *fileTransport) acceptConnection(ctx context.Context) (net.Conn, error) 
 	select {
 	case <-ctx.Done():
 		close(cancelCh)
+		t.closeICE()
 		return nil, ctx.Err()
 	case acceptErr := <-acceptErrCh:
 		close(cancelCh)
+		t.closeICE()
 		return nil, acceptErr
 	case conn := <-readyCh:
 		close(cancelCh)
+		// the ice path lost the race: stop punching and free its sockets
+		// (when it won, the conn's own Close tears the path down later)
+		if _, isICE := conn.(iceStreamConn); !isICE {
+			t.closeICE()
+		}
 		_, err := conn.Write([]byte("go\n"))
 		if err != nil {
 			return nil, err

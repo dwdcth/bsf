@@ -45,11 +45,15 @@ var rootCmd = &cobra.Command{
 }
 
 var (
-	relayURL        string
-	verify          bool
-	hideProgressBar bool
-	acceptAll       bool
-	outDir          string
+	relayURL         string
+	verify           bool
+	hideProgressBar  bool
+	acceptAll        bool
+	outDir           string
+	iceEnabled       = true
+	stunServers      string
+	wsRelayURL       string
+	transitRelayAddr string
 
 	versionTemplate = `{{with .Name}}{{printf "%s " .}}{{end}}{{printf "%s" .Version}}
 `
@@ -71,6 +75,26 @@ func Execute() error {
 	rootCmd.Flags().BoolVarP(&acceptAll, "yes", "y", false, "accept the transfer without prompting and overwrite existing files")
 	rootCmd.Flags().StringVarP(&outDir, "out", "o", ".", "directory to receive into")
 	rootCmd.Flags().BoolVar(&disableClipboard, "disable-clipboard", false, "do not copy received text to the system clipboard")
+	// persistent so both the bare "bsf CODE" form and the send/receive
+	// subcommands accept them
+	rootCmd.PersistentFlags().BoolVar(&iceEnabled, "ice", true, "attempt UDP hole punching (p2p over QUIC) before falling back to a relay")
+	rootCmd.PersistentFlags().StringVar(&stunServers, "stun", "", "comma-separated STUN endpoints (stun:host:port) for hole punching")
+	rootCmd.PersistentFlags().StringVar(&wsRelayURL, "ws-relay", "", "wss:// websocket transit relay to use as fallback (e.g. a Cloudflare Worker)")
+	rootCmd.PersistentFlags().StringVar(&transitRelayAddr, "transit-relay", "", "host:port of a self-hosted TCP transit relay for fallback (default: the public one)")
+
+	if transitRelayAddr == "" {
+		transitRelayAddr = os.Getenv("BSF_TRANSIT_RELAY")
+	}
+
+	if os.Getenv("BSF_NO_ICE") != "" {
+		iceEnabled = false
+	}
+	if stunServers == "" {
+		stunServers = os.Getenv("BSF_STUN")
+	}
+	if wsRelayURL == "" {
+		wsRelayURL = os.Getenv("BSF_WS_RELAY")
+	}
 
 	rootCmd.AddCommand(recvCommand())
 	rootCmd.AddCommand(sendCommand())

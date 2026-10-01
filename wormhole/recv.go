@@ -157,7 +157,20 @@ func (c *Client) Receive(ctx context.Context, code string) (fr *IncomingMessage,
 	}
 
 	transitKey := deriveTransitKey(clientProto.sharedKey, appID)
-	transport := newFileTransport(transitKey, appID, c.relayAddr())
+	transport := newFileTransport(transitKey, appID, c)
+
+	// prefer the STUN endpoint the sender advertised (its self-hosted
+	// rendezvous may double as STUN) over the public defaults
+	if gotTransitMsg.ICE != nil {
+		transport.stunServers = stunServersFor(c, gotTransitMsg.ICE.Stun)
+	}
+
+	// gather hole-punch candidates before building the transit message
+	// so the full set travels inside it (non-trickle ICE)
+	err = transport.prepareICE()
+	if err != nil {
+		return nil, err
+	}
 
 	transitMsg, err := transport.makeTransitMsg()
 	if err != nil {
@@ -259,6 +272,12 @@ func (c *Client) Receive(ctx context.Context, code string) (fr *IncomingMessage,
 			return err
 		}
 
+		if conn == nil && gotTransitMsg.ICE != nil && transport.iceReady() {
+			// UDP hole punch: try the punched QUIC stream before
+			// falling back to the relay
+			conn = transport.connectICEStream(ctx, gotTransitMsg.ICE)
+		}
+
 		if conn == nil {
 			conn, err = transport.connectViaRelay(&gotTransitMsg)
 			if err != nil {
@@ -267,7 +286,15 @@ func (c *Client) Receive(ctx context.Context, code string) (fr *IncomingMessage,
 		}
 
 		if conn == nil {
+			transport.closeICE()
 			return errors.New("failed to establish connection")
+		}
+
+		// the ice path lost the race: stop punching and free its
+		// sockets (when it won, the conn's own Close tears the path
+		// down later)
+		if _, isICE := conn.(iceStreamConn); !isICE {
+			transport.closeICE()
 		}
 
 		cryptor := newTransportCryptor(conn, transitKey, "transit_record_sender_key", "transit_record_receiver_key")

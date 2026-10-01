@@ -95,23 +95,24 @@ func advertisedRendezvous(ts *rendezvousservertest.TestServer) (string, func(), 
 }
 
 // discoverRendezvous looks for a rendezvous server on the local network
-// that knows the given nameplate, and returns its url, or "" when none
-// does. serversSeen is the number of servers that answered at all, for
+// that knows the given nameplate, and returns its url (or "" when none
+// does) plus the "host:port" of a STUN server advertised beside it.
+// serversSeen is the number of servers that answered at all, for
 // diagnostics.
-func discoverRendezvousDetail(nameplate string) (url string, serversSeen int) {
+func discoverRendezvousDetail(nameplate string) (url string, stunAddr string, serversSeen int) {
 	if nameplate == "" {
-		return "", 0
+		return "", "", 0
 	}
 
-	if url, ok := broadcastQueryRendezvous(nameplate); ok {
-		return url, 1
+	if url, stun, ok := broadcastQueryRendezvousDetail(nameplate); ok {
+		return url, stun, 1
 	}
 
-	return "", 0
+	return "", "", 0
 }
 
 func discoverRendezvous(nameplate string) string {
-	url, _ := discoverRendezvousDetail(nameplate)
+	url, _, _ := discoverRendezvousDetail(nameplate)
 	return url
 }
 

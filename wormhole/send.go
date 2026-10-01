@@ -298,7 +298,7 @@ func (c *Client) sendFileDirectory(ctx context.Context, offer *offerMsg, r io.Re
 		}
 
 		transitKey := deriveTransitKey(clientProto.sharedKey, appID)
-		transport := newFileTransport(transitKey, appID, c.relayAddr())
+		transport := newFileTransport(transitKey, appID, c)
 		err = transport.listen()
 		if err != nil {
 			sendErr(err)
@@ -306,6 +306,22 @@ func (c *Client) sendFileDirectory(ctx context.Context, offer *offerMsg, r io.Re
 		}
 
 		err = transport.listenRelay()
+		if err != nil {
+			sendErr(err)
+			return
+		}
+
+		err = transport.listenRelayWS(ctx)
+		if err != nil {
+			// the ws relay is opportunistic: say why it dropped out
+			// and race on without it
+			fmt.Fprintf(os.Stderr, "note: websocket relay unavailable (%s), falling back to the tcp relay\n", err)
+			transport.wsRelayURL = ""
+		}
+
+		// gather hole-punch candidates before building the transit
+		// message so the full set travels inside it (non-trickle ICE)
+		err = transport.prepareICE()
 		if err != nil {
 			sendErr(err)
 			return
@@ -372,10 +388,35 @@ func (c *Client) sendFileDirectory(ctx context.Context, offer *offerMsg, r io.Re
 		var conn net.Conn
 		if parallelPlanned && recvTransit.Parallel > 1 {
 			if readerAt, ok := r.(io.ReaderAt); ok {
-				conns, err := transport.acceptConnections(ctx, options.parallel)
-				if err != nil {
-					sendErr(err)
-					return
+				var conns []net.Conn
+				var reaccept func(context.Context, int) ([]net.Conn, error)
+
+				// the punched path when both peers advertised one; the
+				// streams are opened from this side because the sender
+				// writes first in the transit handshake
+				if recvTransit.ICE != nil && transport.iceReady() {
+					iceConns, iceErr := transport.senderICEConns(ctx, options.parallel, recvTransit.ICE, true)
+					if iceErr == nil {
+						transport.holdICEForParallel()
+						conns = iceConns
+						reaccept = func(c context.Context, n int) ([]net.Conn, error) {
+							return transport.senderICEConns(c, n, recvTransit.ICE, false)
+						}
+					} else {
+						// the punch lost: fall through to tcp/relay
+						transport.closeICE()
+					}
+				}
+
+				if conns == nil {
+					conns, err = transport.acceptConnections(ctx, options.parallel)
+					if err != nil {
+						sendErr(err)
+						return
+					}
+					reaccept = func(c context.Context, n int) ([]net.Conn, error) {
+						return transport.acceptConnections(c, n)
+					}
 				}
 
 				if len(conns) == options.parallel {
@@ -385,7 +426,8 @@ func (c *Client) sendFileDirectory(ctx context.Context, offer *offerMsg, r io.Re
 					} else {
 						totalSize = offer.Directory.ZipSize
 					}
-					err := sendParallelFile(ctx, collector, clientProto, transport, transitKey, totalSize, readerAt, conns, options.progressFunc)
+					err := sendParallelFile(ctx, collector, clientProto, transport, transitKey, totalSize, readerAt, conns, reaccept, options.progressFunc)
+					transport.closeICESoon()
 					if err != nil {
 						sendErr(err)
 					} else {
@@ -411,7 +453,7 @@ func (c *Client) sendFileDirectory(ctx context.Context, offer *offerMsg, r io.Re
 		}
 
 		if conn == nil {
-			conn, err = transport.acceptConnection(ctx)
+			conn, err = transport.acceptConnection(ctx, &recvTransit)
 			if err != nil {
 				sendErr(err)
 				return

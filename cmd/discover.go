@@ -17,9 +17,13 @@ import (
 //
 //	query   "bsf1 Q <nameplate | *>"
 //	answer  "bsf1 R <nameplate,...> <tcp-port>"   (unicast back)
+//	        "bsf2 R <nameplate,...> <tcp-port> <stun-port>"   (only when a
+//	        STUN server runs next to the rendezvous; old receivers keep
+//	        parsing the bsf1 answer)
 const (
 	broadcastDiscoveryPort = 53534
 	broadcastMarker        = "bsf1"
+	broadcastMarkerV2      = "bsf2"
 	broadcastQueryTimeout  = 800 * time.Millisecond
 )
 
@@ -28,6 +32,7 @@ const (
 type broadcastServer struct {
 	nameplates func() []string
 	port       int
+	stunPort   int // 0: no STUN server to advertise
 }
 
 var (
@@ -47,9 +52,18 @@ var (
 func startBroadcastResponder(ts interface {
 	Nameplates() []string
 }, tcpPort int) func() {
+	return startBroadcastResponderWithSTUN(ts, tcpPort, 0)
+}
+
+// startBroadcastResponderWithSTUN also advertises the udp port of a STUN
+// server running next to the rendezvous (0 = none).
+func startBroadcastResponderWithSTUN(ts interface {
+	Nameplates() []string
+}, tcpPort, stunPort int) func() {
 	server := &broadcastServer{
 		nameplates: ts.Nameplates,
 		port:       tcpPort,
+		stunPort:   stunPort,
 	}
 
 	broadcastMu.Lock()
@@ -119,6 +133,10 @@ func startBroadcastListener() {
 
 				answer := fmt.Sprintf("%s R %s %d", broadcastMarker, strings.Join(nameplates, ","), server.port)
 				_, _ = conn.WriteToUDP([]byte(answer), from)
+				if server.stunPort > 0 {
+					answer2 := fmt.Sprintf("%s R %s %d %d", broadcastMarkerV2, strings.Join(nameplates, ","), server.port, server.stunPort)
+					_, _ = conn.WriteToUDP([]byte(answer2), from)
+				}
 			}
 			broadcastMu.Unlock()
 		}
@@ -134,6 +152,80 @@ func broadcastQueryRendezvous(nameplate string) (string, bool) {
 		return "", false
 	}
 	return urls[0], true
+}
+
+// broadcastQueryRendezvousDetail is broadcastQueryRendezvous plus the
+// "host:port" of a STUN server advertised beside the rendezvous, when
+// one answered with the bsf2 variant.
+func broadcastQueryRendezvousDetail(nameplate string) (string, string, bool) {
+	if nameplate == "" {
+		return "", "", false
+	}
+
+	conn, err := net.ListenUDP("udp4", &net.UDPAddr{IP: net.IPv4zero, Port: 0})
+	if err != nil {
+		return "", "", false
+	}
+	defer conn.Close()
+
+	if err := enableBroadcast(conn); err != nil {
+		return "", "", false
+	}
+
+	query := fmt.Sprintf("%s Q %s", broadcastMarker, nameplate)
+	sendAll := func() {
+		for _, addr := range queryDestinations() {
+			_, _ = conn.WriteToUDP([]byte(query), addr)
+		}
+	}
+
+	sendAll()
+	time.AfterFunc(250*time.Millisecond, sendAll)
+	time.AfterFunc(500*time.Millisecond, sendAll)
+
+	var stunAddr string
+	deadline := time.Now().Add(broadcastQueryTimeout)
+	buf := make([]byte, 512)
+	for {
+		remaining := time.Until(deadline)
+		if remaining <= 0 {
+			break
+		}
+
+		_ = conn.SetReadDeadline(deadline)
+		n, from, err := conn.ReadFromUDP(buf)
+		if err != nil {
+			break
+		}
+
+		fields := strings.Fields(string(buf[:n]))
+		if len(fields) < 4 || fields[1] != "R" || fields[0] != broadcastMarker && fields[0] != broadcastMarkerV2 {
+			continue
+		}
+		if nameplate != "*" && !containsNameplate(fields[2], nameplate) {
+			continue
+		}
+
+		port, err := strconv.Atoi(fields[3])
+		if err != nil || port <= 0 {
+			continue
+		}
+
+		host := from.IP.String()
+		if from.IP.To4() == nil {
+			host = "[" + host + "]"
+		}
+
+		if fields[0] == broadcastMarkerV2 && len(fields) >= 5 {
+			if stunPort, serr := strconv.Atoi(fields[4]); serr == nil && stunPort > 0 {
+				stunAddr = net.JoinHostPort(from.IP.String(), fields[4])
+			}
+		}
+
+		return fmt.Sprintf("ws://%s:%d/ws", host, port), stunAddr, true
+	}
+
+	return "", "", false
 }
 
 // broadcastQueryAllRendezvous broadcasts a query and returns the urls
@@ -184,7 +276,7 @@ func broadcastQueryAllRendezvous(nameplate string, collectAll bool) []string {
 		}
 
 		fields := strings.Fields(string(buf[:n]))
-		if len(fields) != 4 || fields[0] != broadcastMarker || fields[1] != "R" {
+		if len(fields) < 4 || fields[1] != "R" || fields[0] != broadcastMarker && fields[0] != broadcastMarkerV2 {
 			continue
 		}
 		if nameplate != "*" && !containsNameplate(fields[2], nameplate) {

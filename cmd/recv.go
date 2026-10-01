@@ -63,8 +63,12 @@ func recvAction(cmd *cobra.Command, args []string) {
 	// network that knows this code before falling back to the public one
 	if relayURL != "" {
 		fmt.Printf("Rendezvous: %s (relay)\n", relayURL)
-	} else if url, seen := discoverRendezvousDetail(codeNameplate(code)); url != "" {
+	} else if url, stunAddr, seen := discoverRendezvousDetail(codeNameplate(code)); url != "" {
 		c.RendezvousURL = url
+		// the local server doubles as STUN when it runs one
+		if stunAddr != "" && len(c.STUNServers) == 0 {
+			c.STUNServers = []string{"stun:" + stunAddr}
+		}
 		fmt.Printf("Rendezvous: %s (local network)\n", url)
 	} else {
 		if seen > 0 {

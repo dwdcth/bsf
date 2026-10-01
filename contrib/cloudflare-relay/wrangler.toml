@@ -1,0 +1,26 @@
+name = "bsf-ws-relay"
+main = "worker.js"
+compatibility_date = "2026-09-01"
+
+# a custom domain is required for reachability from mainland China:
+# *.workers.dev is blocked there, a domain on your own zone is not.
+# Replace the pattern with a hostname on a zone in your account:
+#
+# routes = [
+#   { pattern = "bsf.example.org", custom_domain = true }
+# ]
+
+[durable_objects]
+bindings = [
+  { name = "RELAY", class_name = "RelayDO" },
+  { name = "RENDEZVOUS", class_name = "RendezvousDO" },
+]
+
+[[migrations]]
+tag = "v1"
+# free plan requires sqlite-backed durable objects
+new_sqlite_classes = ["RelayDO"]
+
+[[migrations]]
+tag = "v2"
+new_sqlite_classes = ["RendezvousDO"]

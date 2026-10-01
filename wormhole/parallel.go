@@ -42,9 +42,12 @@ const defaultTransitPort = 40010
 const (
 	parallelResumePhase = "bsf-resume"
 	parallelAcceptWait  = 3 * time.Second
-	parallelFirstWait   = 30 * time.Second
-	parallelResumeWait  = 15 * time.Minute
-	parallelRecordSize  = 1 << 18
+	// the first connection may legitimately take a while: a cross-NAT
+	// receiver first tries a (bounded) direct probe and possibly a
+	// websocket relay dial before its tcp relay connection pairs
+	parallelFirstWait  = 60 * time.Second
+	parallelResumeWait = 15 * time.Minute
+	parallelRecordSize = 1 << 18
 )
 
 type parallelResumeMsg struct {
@@ -146,7 +149,7 @@ func streamPurposes(stream, attempt int) (readPurpose, writePurpose string) {
 // peer goes away. It takes ownership of the listener (closing it at
 // the end) and of the collector (closing it immediately so resume
 // messages can be read from the raw phase channel).
-func sendParallelFile(ctx context.Context, collector *msgCollector, clientProto *clientProtocol, transport *fileTransport, transitKey []byte, total int64, src io.ReaderAt, conns []net.Conn, progressFn func(sent, total int64)) error {
+func sendParallelFile(ctx context.Context, collector *msgCollector, clientProto *clientProtocol, transport *fileTransport, transitKey []byte, total int64, src io.ReaderAt, conns []net.Conn, reaccept func(context.Context, int) ([]net.Conn, error), progressFn func(sent, total int64)) error {
 	if transport.listener != nil {
 		defer transport.listener.Close()
 	}
@@ -239,11 +242,11 @@ func sendParallelFile(ctx context.Context, collector *msgCollector, clientProto 
 			}
 		}
 
-		// a stream dropped: close the broken connections so the
+		// a stream dropped: abort the broken connections so the
 		// receiver's other readers also fail, then wait for it to say
 		// where it is
 		for _, c := range cryptors {
-			c.Close()
+			abortConn(c.conn)
 		}
 
 		resume, err := waitParallelResume(ctx, clientProto, n)
@@ -269,7 +272,7 @@ func sendParallelFile(ctx context.Context, collector *msgCollector, clientProto 
 
 		attempt = resume.Attempt
 
-		conns, err = transport.acceptConnections(ctx, n)
+		conns, err = reaccept(ctx, n)
 		if err != nil {
 			return err
 		}
@@ -437,8 +440,9 @@ func waitParallelResume(ctx context.Context, clientProto *clientProtocol, n int)
 // receiveParallelFile is the receiver half: it writes the chunks into
 // dest as they arrive, reconnecting with a resume message whenever a
 // stream drops, and finally acknowledges with the concatenated
-// per-stream hash.
-func receiveParallelFile(ctx context.Context, clientProto *clientProtocol, transport *fileTransport, transitKey []byte, addr string, conns []net.Conn, total int64, n int, dest io.WriterAt, progressFn func(received, total int64)) error {
+// per-stream hash. reconnect re-establishes the n streams after a drop:
+// the direct TCP dialer, or a redial over the punched path.
+func receiveParallelFile(ctx context.Context, clientProto *clientProtocol, transport *fileTransport, transitKey []byte, reconnect func(context.Context, int) ([]net.Conn, error), conns []net.Conn, total int64, n int, dest io.WriterAt, progressFn func(received, total int64)) error {
 	received := make([]int64, n)
 	hashers := make([]hash.Hash, n)
 	for i := range hashers {
@@ -491,10 +495,11 @@ func receiveParallelFile(ctx context.Context, clientProto *clientProtocol, trans
 			return nil
 		}
 
-		// a stream dropped: close all connections so the sender's
-		// writers unblock, then tell it where to resume from
+		// a stream dropped: abort the connections so the sender's
+		// writers unblock (a graceful FIN could sit behind a full
+		// flow-control window), then tell it where to resume from
 		for _, c := range cryptors {
-			c.Close()
+			abortConn(c.conn)
 		}
 
 		attempt++
@@ -516,7 +521,7 @@ func receiveParallelFile(ctx context.Context, clientProto *clientProtocol, trans
 		var rerr error
 		retryDeadline := time.Now().Add(parallelResumeWait - time.Minute)
 		for {
-			newConns, rerr = dialDirectAddrs(ctx, transport, addr, n)
+			newConns, rerr = reconnect(ctx, n)
 			if rerr == nil {
 				break
 			}
@@ -589,6 +594,12 @@ func recvAllStreams(ctx context.Context, cryptors []*transportCryptor, attempt i
 		return nil
 	case err := <-errCh:
 		cancel()
+		// a worker blocked inside a read cannot see the cancellation:
+		// abort every stream so the session's shared flow-control
+		// window is released and the stragglers can drain out
+		for _, cryptor := range cryptors {
+			abortConn(cryptor.conn)
+		}
 		<-done
 		return err
 	}
@@ -686,14 +697,43 @@ func (m *IncomingMessage) ReceiveFileInto(ctx context.Context, dest io.WriterAt,
 		p.clientProto.rc.Close(closeCtx, mood)
 	}
 
-	conn1, addr, perr := probeDirectAddr(ctx, p.transport, &p.peerTransit)
+	// the punched path comes first when the peer advertised one: the
+	// sender commits to it the same way, and starting here keeps both
+	// punch windows aligned (a tcp probe over unroutable lan hints can
+	// otherwise burn half a minute before the punch even starts). A
+	// failed punch falls through to the direct tcp probe and the relay.
+	if p.peerTransit.ICE != nil && p.transport.iceReady() {
+		conns, iceErr := p.transport.receiverICEConns(ctx, p.streams, p.peerTransit.ICE, true)
+		if iceErr == nil && len(conns) == p.streams {
+			p.transport.holdICEForParallel()
+			rerr := receiveParallelFile(ctx, p.clientProto, p.transport, p.transitKey,
+				func(c context.Context, n int) ([]net.Conn, error) {
+					return p.transport.receiverICEConns(c, n, p.peerTransit.ICE, false)
+				}, conns, p.total, p.streams, dest, progressFn)
+			p.transport.closeICESoon()
+			closeMailbox(rerr)
+			return rerr
+		}
+		p.transport.closeICE()
+	}
+
+	// each probe round gets a budget: every unroutable lan hint would
+	// otherwise burn its full dial timeout sequentially while the
+	// sender's accept window ticks away
+	probeRound := func() (net.Conn, string, error) {
+		pctx, pcancel := context.WithTimeout(ctx, 6*time.Second)
+		defer pcancel()
+		return probeDirectAddr(pctx, p.transport, &p.peerTransit)
+	}
+	conn1, addr, perr := probeRound()
 	if perr != nil {
 		// a wifi blip can fail every probe at once; the sender is
 		// usually still there, so try once more before deciding there
 		// is no direct path
 		time.Sleep(time.Second)
-		conn1, addr, perr = probeDirectAddr(ctx, p.transport, &p.peerTransit)
+		conn1, addr, perr = probeRound()
 	}
+
 	if perr != nil {
 		// no direct path (both peers behind hard NAT): fall back to a
 		// single relay stream written sequentially
@@ -711,7 +751,10 @@ func (m *IncomingMessage) ReceiveFileInto(ctx context.Context, dest io.WriterAt,
 	}
 	conns = append(conns, more...)
 
-	rerr := receiveParallelFile(ctx, p.clientProto, p.transport, p.transitKey, addr, conns, p.total, p.streams, dest, progressFn)
+	rerr := receiveParallelFile(ctx, p.clientProto, p.transport, p.transitKey,
+		func(c context.Context, n int) ([]net.Conn, error) {
+			return dialDirectAddrs(c, p.transport, addr, n)
+		}, conns, p.total, p.streams, dest, progressFn)
 	closeMailbox(rerr)
 	return rerr
 }
@@ -748,23 +791,18 @@ func (m *IncomingMessage) receiveViaRelayFallback(ctx context.Context, dest io.W
 		}
 	}
 
-	sum := sha256.Sum256(hasher.Sum(nil))
+	// single hash of the whole stream: the sender treats a one-conn
+	// accept as the legacy single-stream protocol and compares against
+	// exactly this (the parallel protocol's concatenated per-stream
+	// hash does not apply here)
 	ack := fileTransportAck{
 		Ack:    "ok",
-		SHA256: hex.EncodeToString(sum[:]),
+		SHA256: hex.EncodeToString(hasher.Sum(nil)),
 	}
 	ackBody, err := json.Marshal(ack)
 	if err != nil {
 		return err
 	}
 
-	// the fallback receiver hashes the whole stream, which matches the
-	// sender's single-stream hash only if it also used one stream; the
-	// sender falls back automatically when we did not open parallel
-	// streams, so the concatenated-hash ack of the parallel protocol
-	// does not apply here. The sender treats a 1-conn accept as the
-	// legacy protocol and compares against its whole-file hash.
-	// For that comparison to work we must send the whole-file hash,
-	// which is exactly what we computed above.
 	return cryptor.writeRecord(ackBody)
 }
