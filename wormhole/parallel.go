@@ -359,6 +359,18 @@ func pumpAllStreams(ctx context.Context, src io.ReaderAt, cryptors []*transportC
 		return nil
 	case e := <-errCh:
 		cancel()
+		// A writer can still be inside writeRecord when the first error
+		// wins: its sent[i]/hashers[i] updates must not land after the
+		// caller rewinds them for a resume (a late increment silently
+		// shifts the next attempt's offsets — the receiver's strictly
+		// increasing record nonces cannot catch it, since both sides
+		// number their records from zero on every attempt). Abort the
+		// connections to unblock the stuck writers, then wait for every
+		// one of them to finish.
+		for _, cryptor := range cryptors {
+			abortConn(cryptor.conn)
+		}
+		<-done
 		return e.err
 	}
 }
