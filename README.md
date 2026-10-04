@@ -129,6 +129,16 @@ Rendezvous: ws://192.168.31.37:40009/ws (local network)
 
 传输路径优先级（任一失败自动降级，全程密文）：**直连 TCP → UDP 打洞（ICE + QUIC 多流）→ 中继**；中继里配置了 `--ws-relay` 时优先 WebSocket 中继，否则 TCP 中继（`bsf server --transit` 自建或公共 `transit.magic-wormhole.io:4001`）。
 
+打洞路径的 UDP 接收缓冲无法在运行时调大（socket 归 ICE 库所有）；Linux 默认约 208 KiB，高吞吐传输可能因内核丢包重传跑不满带宽。有需要可在系统级调大，对新发起的传输生效，也惠及其他 UDP 程序：
+
+```
+sudo sysctl -w net.core.rmem_default=7340032    # 立即生效
+echo 'net.core.rmem_default=7340032' | sudo tee /etc/sysctl.d/99-bsf.conf
+sudo sysctl --system                            # 重启后仍生效
+```
+
+（7 MiB 为 QUIC 建议的接收缓冲大小；macOS 上对应 `net.inet.udp.recvspace`。）
+
 开防火墙的机器需要放行：
 
 ```

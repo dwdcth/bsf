@@ -91,6 +91,21 @@ Connection priority, each step falling back to the next: **direct TCP →
 UDP punch (ICE + QUIC) → relay** (websocket relay when configured, else
 the TCP transit relay).
 
+The punched path's UDP receive buffer can't be enlarged at runtime (the
+socket belongs to the ICE stack); Linux defaults to about 208 KiB,
+which can cap high-throughput transfers through kernel drops and
+retransmits. Raise it system-wide — it applies to the next transfer
+started, and benefits every other UDP program too:
+
+```
+sudo sysctl -w net.core.rmem_default=7340032    # takes effect at once
+echo 'net.core.rmem_default=7340032' | sudo tee /etc/sysctl.d/99-bsf.conf
+sudo sysctl --system                            # persists across reboots
+```
+
+(7 MiB is the receive buffer QUIC recommends; on macOS the equivalent
+is `net.inet.udp.recvspace`.)
+
 ### CLI tab completion
 
 The bsf CLI supports shell completion, including completing the receive code.
