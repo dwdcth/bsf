@@ -582,6 +582,15 @@ func (c *icePacketConn) SetDeadline(tm time.Time) error      { return c.conn.Set
 func (c *icePacketConn) SetReadDeadline(tm time.Time) error  { return c.conn.SetReadDeadline(tm) }
 func (c *icePacketConn) SetWriteDeadline(tm time.Time) error { return c.conn.SetWriteDeadline(tm) }
 
+// SetReadBuffer and SetWriteBuffer satisfy quic-go's socket buffer
+// sizing probe (without them it warns, once per process, that the conn
+// is "not a *net.UDPConn" — alarming and unactionable for users). The
+// UDP socket is owned by the pion ICE agent and has no API to resize
+// it, so both are accepted and ignored; a larger buffer can still be
+// arranged system-wide via net.core.rmem_default.
+func (c *icePacketConn) SetReadBuffer(int) error  { return nil }
+func (c *icePacketConn) SetWriteBuffer(int) error { return nil }
+
 // iceStreamConn adapts a *quic.Stream (which has no address methods)
 // into a net.Conn. Closing a stream only sends its FIN: tearing the
 // whole path down right away would discard undelivered stream data (the
