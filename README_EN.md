@@ -69,11 +69,35 @@ Aliases:
 Flags:
   -h, --help            help for receive
       --hide-progress   suppress progress-bar display
+  -s, --serve           start an HTTP upload server (port 8075) instead of waiting for a code
   -v, --verify          display verification string (and wait for approval)
 
 Global Flags:
       --relay-url string   rendezvous relay to use
 ```
+
+### HTTP upload server (bsf receive -s)
+
+`bsf receive -s` starts an upload server on this machine (port 8075 by
+default, moving to the next free port if taken). Any device on the
+network opens the printed URL in a browser and uploads — nothing to
+install on the sending side:
+
+```
+$ bsf receive -s
+Upload server (no install needed on the sender side, just a browser):
+  http://localhost:8075
+  http://192.168.31.178:8075
+```
+
+- single files, multiple files, and whole folders (folder picker, or
+  drag a directory onto the page)
+- saves into the current directory (`-o` to change it) without asking
+- name clashes are auto-renamed: `a.txt` → `a_1.txt` → `a_2.txt` …
+  (compound extensions stay intact: `a.tar.gz` → `a_1.tar.gz`)
+- also works from the command line:
+  `curl --data-binary @file.txt 'http://<ip>:8075/upload?name=file.txt'`
+- upload paths are sanitized; absolute paths and `..` are rejected
 
 ### UDP hole punching (P2P over QUIC)
 

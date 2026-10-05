@@ -93,10 +93,28 @@ bsf receive
 | --- | --- |
 | `-y, --yes` | 跳过确认并覆盖同名文件 |
 | `-o, --out string` | 接收目录，默认 `.` |
+| `-s, --serve` | 启动 HTTP 上传服务（见下节），而不是等待口令码 |
 | `--parallel int` | 并行流数量，默认 4（发送端提供时生效） |
 | `-v, --verify` | 显示校验串 |
 | `--hide-progress` | 不显示进度条 |
 | `--disable-clipboard` | 不把收到的文本复制到剪贴板 |
+
+## HTTP 上传服务（bsf receive -s）
+
+`bsf receive -s` 在本机启动一个上传服务（默认 8075 端口，被占用自动换下一个），同网络的任何设备用浏览器打开打印的地址即可上传——发送端什么都不用装：
+
+```
+$ bsf receive -s
+Upload server (no install needed on the sender side, just a browser):
+  http://localhost:8075
+  http://192.168.31.178:8075
+```
+
+- 支持单文件、多文件和整个文件夹（选择文件夹，或直接把目录拖进页面）
+- 保存到当前目录，`-o` 换目录；直接保存不询问
+- 同名文件自动改名：`a.txt` → `a_1.txt` → `a_2.txt` …（`.tar.gz` 这类复合后缀保持完整：`a.tar.gz` → `a_1.tar.gz`）
+- 命令行同样可传：`curl --data-binary @file.txt 'http://<ip>:8075/upload?name=file.txt'`
+- 上传路径经清洗，拒绝绝对路径与 `..` 穿越
 
 全局：
 

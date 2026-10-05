@@ -62,6 +62,7 @@ var (
 	hideProgressBar  bool
 	acceptAll        bool
 	outDir           string
+	serveMode        bool
 	iceEnabled       = true
 	stunServers      string
 	wsRelayURL       string

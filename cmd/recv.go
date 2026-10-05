@@ -31,6 +31,7 @@ func recvCommand() *cobra.Command {
 	cmd.Flags().BoolVarP(&acceptAll, "yes", "y", false, "accept the transfer without prompting and overwrite existing files")
 	cmd.Flags().StringVarP(&outDir, "out", "o", ".", "directory to receive into")
 	cmd.Flags().BoolVar(&disableClipboard, "disable-clipboard", false, "do not copy received text to the system clipboard")
+	cmd.Flags().BoolVarP(&serveMode, "serve", "s", false, "start an HTTP upload server on port 8075 instead of waiting for a code: any browser can upload (files and folders) into --out without confirming")
 
 	cmd.ValidArgsFunction = recvCodeCompletion
 
@@ -38,6 +39,13 @@ func recvCommand() *cobra.Command {
 }
 
 func recvAction(cmd *cobra.Command, args []string) {
+	if serveMode {
+		if err := serveUploads(outDir); err != nil {
+			bail("Upload server: %s", err)
+		}
+		return
+	}
+
 	var (
 		code string
 		c    = newClient()
