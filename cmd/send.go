@@ -358,6 +358,7 @@ func sendFile(filename string) {
 	if err != nil {
 		bail("Failed to open %s: %s", filename, err)
 	}
+	defer f.Close()
 
 	var bar *pb.ProgressBar
 
