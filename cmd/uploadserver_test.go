@@ -16,9 +16,9 @@ import (
 	"testing"
 )
 
-func postUpload(t *testing.T, target, name string, body []byte) (*http.Response, string) {
+func postUploadQuery(t *testing.T, target, rawQuery string, body []byte) (*http.Response, string) {
 	t.Helper()
-	resp, err := http.Post(target+"/upload?name="+url.QueryEscape(name), "application/octet-stream", bytes.NewReader(body))
+	resp, err := http.Post(target+"/upload?"+rawQuery, "application/octet-stream", bytes.NewReader(body))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -27,9 +27,14 @@ func postUpload(t *testing.T, target, name string, body []byte) (*http.Response,
 	return resp, string(b)
 }
 
+func postUpload(t *testing.T, target, name string, body []byte) (*http.Response, string) {
+	t.Helper()
+	return postUploadQuery(t, target, "name="+url.QueryEscape(name), body)
+}
+
 func TestUploadHandlerSavesAndRenames(t *testing.T) {
 	dir := t.TempDir()
-	srv := httptest.NewServer(uploadHandler(dir))
+	srv := httptest.NewServer(uploadHandler(dir, ""))
 	defer srv.Close()
 
 	// single file
@@ -85,7 +90,7 @@ func TestUploadHandlerSavesAndRenames(t *testing.T) {
 
 func TestUploadHandlerRejectsBadNames(t *testing.T) {
 	dir := t.TempDir()
-	srv := httptest.NewServer(uploadHandler(dir))
+	srv := httptest.NewServer(uploadHandler(dir, ""))
 	defer srv.Close()
 
 	for _, name := range []string{"../evil", "sub/../../evil", "/etc/passwd", "C:/evil", "..", "", " "} {
@@ -103,7 +108,7 @@ func TestUploadHandlerRejectsBadNames(t *testing.T) {
 }
 
 func TestUploadHandlerServesPage(t *testing.T) {
-	srv := httptest.NewServer(uploadHandler(t.TempDir()))
+	srv := httptest.NewServer(uploadHandler(t.TempDir(), ""))
 	defer srv.Close()
 
 	resp, err := http.Get(srv.URL + "/")
@@ -141,7 +146,7 @@ func TestStartUploadServerPortFallback(t *testing.T) {
 	defer blocker.Close()
 
 	dir := t.TempDir()
-	ln, port, err := startUploadServer(base, dir)
+	ln, port, err := startUploadServer(base, dir, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -178,5 +183,65 @@ func TestCollisionName(t *testing.T) {
 		if got := collisionName(tt.base, tt.n); got != tt.want {
 			t.Errorf("collisionName(%q, %d) = %q, want %q", tt.base, tt.n, got, tt.want)
 		}
+	}
+}
+
+func TestUploadTokenRequired(t *testing.T) {
+	dir := t.TempDir()
+	const token = "ab3xk9mq"
+
+	// wrong token: page still served, uploads and checks rejected
+	srv := httptest.NewServer(uploadHandler(dir, token))
+	defer srv.Close()
+
+	if resp, _ := postUpload(t, srv.URL, "a.txt", []byte("x")); resp.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("upload without token: status %d", resp.StatusCode)
+	}
+	resp, _ := postUploadQuery(t, srv.URL, "name=a.txt&t=wrong1", []byte("x"))
+	if resp.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("upload with wrong token: status %d", resp.StatusCode)
+	}
+	if resp, err := http.Get(srv.URL + "/check?t=wrong1"); err != nil || resp.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("check with wrong token: %v %d", err, resp.StatusCode)
+	}
+
+	// right token, via query and via header
+	if resp, body := postUploadQuery(t, srv.URL, "name=a.txt&t="+token, []byte("ok")); resp.StatusCode != http.StatusCreated {
+		t.Fatalf("upload with token: status %d: %s", resp.StatusCode, body)
+	}
+	req, _ := http.NewRequest("POST", srv.URL+"/upload?name=b.txt", strings.NewReader("hdr"))
+	req.Header.Set("X-Upload-Token", token)
+	resp2, err := http.DefaultClient.Do(req)
+	if err != nil || resp2.StatusCode != http.StatusCreated {
+		t.Fatalf("upload with header token: %v %d", err, resp2.StatusCode)
+	}
+	resp2.Body.Close()
+
+	// nothing saved by the rejected attempts
+	entries, _ := os.ReadDir(dir)
+	if len(entries) != 2 {
+		t.Fatalf("expected exactly a.txt and b.txt, got %v", entries)
+	}
+}
+
+func TestRandomUploadToken(t *testing.T) {
+	seen := map[string]bool{}
+	for i := 0; i < 32; i++ {
+		tok, err := randomUploadToken()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(tok) != uploadTokenLen {
+			t.Fatalf("token %q has length %d", tok, len(tok))
+		}
+		for _, c := range tok {
+			if !strings.ContainsRune(uploadTokenAlphabet, c) {
+				t.Fatalf("token %q has character %q outside the alphabet", tok, c)
+			}
+		}
+		if seen[tok] {
+			t.Fatalf("token %q repeated", tok)
+		}
+		seen[tok] = true
 	}
 }

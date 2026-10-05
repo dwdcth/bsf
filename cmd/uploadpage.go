@@ -34,12 +34,27 @@ const uploadPageHTML = `<!doctype html>
   .bar > div { height: 100%; width: 0; background: #3b82f6; transition: .15s; }
   .row.err .bar > div { background: #ef4444; width: 100%; }
   .hint { margin-top: 20px; opacity: .6; font-size: .8em; word-break: break-all; }
+  #lock { display: none; border: 2px dashed rgba(127,127,127,.5); border-radius: 12px;
+          padding: 34px 16px; text-align: center; }
+  #lock input { font: inherit; padding: 7px 10px; border-radius: 8px; width: 11ch;
+                text-align: center; border: 1px solid rgba(127,127,127,.5); }
+  body.locked #lock { display: block; }
+  body.locked #drop, body.locked #files { display: none; }
 </style>
 </head>
 <body>
 <main>
   <h1>上传文件 / Upload files</h1>
   <div class="sub">保存到接收方当前目录，同名文件自动加 _1 / saved on the receiver, name clashes get a _1 suffix</div>
+
+  <div id="lock">
+    <div><b>请输入上传口令</b> / enter the upload token<br>
+    <span class="sub">it is printed on the receiver's terminal</span></div>
+    <div class="btns" style="justify-content:center">
+      <input id="tok" autocomplete="off" autocapitalize="off" spellcheck="false">
+      <button id="unlock">进入 / go</button>
+    </div>
+  </div>
 
   <div id="drop">
     <div><b>拖放文件或文件夹到这里</b><br><span class="sub">drag &amp; drop files or folders here</span></div>
@@ -57,6 +72,25 @@ const uploadPageHTML = `<!doctype html>
 
 <script>
 const $ = id => document.getElementById(id);
+const token = new URLSearchParams(location.search).get("t") || "";
+if (token) {
+  // a restart minted a new token: fall back to the input
+  fetch("/check?t=" + encodeURIComponent(token)).then(r => {
+    if (!r.ok) lockPage("口令已失效，请重新输入 / token stale, re-enter it");
+  });
+} else {
+  lockPage();
+}
+function lockPage(note) {
+  document.body.classList.add("locked");
+  if (note) document.querySelector("#lock .sub").textContent = note;
+}
+$("unlock").onclick = () => {
+  const v = $("tok").value.trim();
+  if (v) location = "/?t=" + encodeURIComponent(v);
+};
+$("tok").onkeydown = e => { if (e.key == "Enter") $("unlock").onclick(); };
+
 let totalBytes = 0, doneBytes = 0, count = 0;
 
 function human(n) {
@@ -84,7 +118,8 @@ function addRow(path, size) {
 function upload(path, file, row) {
   return new Promise(resolve => {
     const xhr = new XMLHttpRequest();
-    xhr.open("POST", "/upload?name=" + encodeURIComponent(path));
+    xhr.open("POST", "/upload?name=" + encodeURIComponent(path) + "&t=" + encodeURIComponent(token));
+    xhr.setRequestHeader("X-Upload-Token", token);
     xhr.upload.onprogress = e => {
       if (e.lengthComputable) {
         row.progress(e.loaded / e.total);

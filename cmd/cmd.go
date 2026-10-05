@@ -63,6 +63,7 @@ var (
 	acceptAll        bool
 	outDir           string
 	serveMode        bool
+	uploadToken      string
 	iceEnabled       = true
 	stunServers      string
 	wsRelayURL       string

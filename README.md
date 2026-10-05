@@ -94,6 +94,7 @@ bsf receive
 | `-y, --yes` | 跳过确认并覆盖同名文件 |
 | `-o, --out string` | 接收目录，默认 `.` |
 | `-s, --serve` | 启动 HTTP 上传服务（见下节），而不是等待口令码 |
+| `-t, --token string` | 上传服务的网页口令；不传则随机生成 8 位并打印到终端 |
 | `--parallel int` | 并行流数量，默认 4（发送端提供时生效） |
 | `-v, --verify` | 显示校验串 |
 | `--hide-progress` | 不显示进度条 |
@@ -106,14 +107,16 @@ bsf receive
 ```
 $ bsf receive -s
 Upload server (no install needed on the sender side, just a browser):
-  http://localhost:8075
-  http://192.168.31.178:8075
+  http://localhost:8075/?t=7wz54fnv
+  http://192.168.31.178:8075/?t=7wz54fnv
+Upload token: 7wz54fnv (also accepted as the X-Upload-Token header)
 ```
 
+- 上传口令防路人：`-t` 指定；不传时随机生成 8 位（去掉了易混淆的 0/O、1/l/I）并打印——打印的网址已带 `?t=口令`，打开即用；没带口令打开的页面会先要求输入
 - 支持单文件、多文件和整个文件夹（选择文件夹，或直接把目录拖进页面）
 - 保存到当前目录，`-o` 换目录；直接保存不询问
 - 同名文件自动改名：`a.txt` → `a_1.txt` → `a_2.txt` …（`.tar.gz` 这类复合后缀保持完整：`a.tar.gz` → `a_1.tar.gz`）
-- 命令行同样可传：`curl --data-binary @file.txt 'http://<ip>:8075/upload?name=file.txt'`
+- 命令行同样可传：`curl --data-binary @file.txt 'http://<ip>:8075/upload?name=file.txt&t=<口令>'`
 - 上传路径经清洗，拒绝绝对路径与 `..` 穿越
 
 全局：

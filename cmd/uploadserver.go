@@ -1,6 +1,8 @@
 package cmd
 
 import (
+	"crypto/rand"
+	"crypto/subtle"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -28,10 +30,45 @@ const uploadBasePort = 8075
 // uploadPortTries bounds that search.
 const uploadPortTries = 25
 
+// uploadTokenLen is the length of the token generated when -t is not
+// given; the alphabet drops easily-confused characters (0/O, 1/l/I)
+// since the token gets typed on phones.
+const uploadTokenLen = 8
+
+const uploadTokenAlphabet = "23456789abcdefghjkmnpqrstuvwxyz"
+
+// randomUploadToken mints a token from crypto/rand.
+func randomUploadToken() (string, error) {
+	out := make([]byte, uploadTokenLen)
+	buf := make([]byte, uploadTokenLen)
+	if _, err := rand.Read(buf); err != nil {
+		return "", err
+	}
+	for i, b := range buf {
+		out[i] = uploadTokenAlphabet[int(b)%len(uploadTokenAlphabet)]
+	}
+	return string(out), nil
+}
+
+// uploadTokenOK checks a request's token in constant time. The token
+// rides the ?t= query parameter (as the printed URLs carry it) or the
+// X-Upload-Token header.
+func uploadTokenOK(r *http.Request, token string) bool {
+	got := r.URL.Query().Get("t")
+	if got == "" {
+		got = r.Header.Get("X-Upload-Token")
+	}
+	if len(got) != len(token) {
+		return false
+	}
+	return subtle.ConstantTimeCompare([]byte(got), []byte(token)) == 1
+}
+
 // startUploadServer serves the upload page and endpoint until the
 // listener is closed, trying basePort, basePort+1, … for a free port.
+// Every request must carry token (query ?t= or X-Upload-Token header).
 // It returns the listener so tests can shut it down.
-func startUploadServer(basePort int, dir string) (net.Listener, int, error) {
+func startUploadServer(basePort int, dir, token string) (net.Listener, int, error) {
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return nil, 0, fmt.Errorf("create target directory: %w", err)
 	}
@@ -51,7 +88,7 @@ func startUploadServer(basePort int, dir string) (net.Listener, int, error) {
 	}
 
 	srv := &http.Server{
-		Handler:           uploadHandler(dir),
+		Handler:           uploadHandler(dir, token),
 		ReadHeaderTimeout: 30 * time.Second,
 	}
 
@@ -63,26 +100,33 @@ func startUploadServer(basePort int, dir string) (net.Listener, int, error) {
 }
 
 // serveUploads runs the upload server in the foreground, printing the
-// URLs to open. It only returns on server failure.
+// token-protected URLs to open. It only returns on server failure.
 func serveUploads(dir string) error {
 	abs, err := filepath.Abs(dir)
 	if err != nil {
 		return err
 	}
 
-	ln, port, err := startUploadServer(uploadBasePort, dir)
+	if uploadToken == "" {
+		if uploadToken, err = randomUploadToken(); err != nil {
+			return fmt.Errorf("generate upload token: %w", err)
+		}
+	}
+
+	ln, port, err := startUploadServer(uploadBasePort, dir, uploadToken)
 	if err != nil {
 		return err
 	}
 	defer ln.Close()
 
 	fmt.Printf("Upload server (no install needed on the sender side, just a browser):\n")
-	fmt.Printf("  http://localhost:%d\n", port)
+	fmt.Printf("  http://localhost:%d/?t=%s\n", port, uploadToken)
 	for _, ip := range lanIPs() {
 		if v4 := ip.To4(); v4 != nil {
-			fmt.Printf("  http://%s:%d\n", v4, port)
+			fmt.Printf("  http://%s:%d/?t=%s\n", v4, port, uploadToken)
 		}
 	}
+	fmt.Printf("Upload token: %s (also accepted as the X-Upload-Token header)\n", uploadToken)
 	fmt.Printf("Saving into %s without confirmation; existing names get a _1, _2, … suffix.\n", abs)
 	fmt.Printf("Ctrl-C to stop.\n")
 
@@ -97,8 +141,11 @@ func serveUploads(dir string) error {
 // upload per POST on /upload?name=<relative path>. Raw bodies keep the
 // server side streaming (no multipart buffering) and stay curl-able:
 //
-//	curl --data-binary @file.txt 'http://host:8075/upload?name=file.txt'
-func uploadHandler(dir string) http.Handler {
+//	curl --data-binary @file.txt 'http://host:8075/upload?name=file.txt&t=TOKEN'
+//
+// The page itself is public (it is just UI), but every upload must
+// carry the token as ?t= or the X-Upload-Token header.
+func uploadHandler(dir, token string) http.Handler {
 	mux := http.NewServeMux()
 
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
@@ -111,9 +158,23 @@ func uploadHandler(dir string) http.Handler {
 		fmt.Fprint(w, uploadPageHTML)
 	})
 
+	mux.HandleFunc("/check", func(w http.ResponseWriter, r *http.Request) {
+		// the page verifies its ?t= token after a server restart
+		// replaced it, so stale links show the token input again
+		if !uploadTokenOK(r, token) {
+			http.Error(w, "bad or missing upload token\n", http.StatusUnauthorized)
+			return
+		}
+		w.WriteHeader(http.StatusNoContent)
+	})
+
 	mux.HandleFunc("/upload", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {
 			http.Error(w, "POST a file body to /upload?name=<path>\n", http.StatusMethodNotAllowed)
+			return
+		}
+		if !uploadTokenOK(r, token) {
+			http.Error(w, "bad or missing upload token\n", http.StatusUnauthorized)
 			return
 		}
 

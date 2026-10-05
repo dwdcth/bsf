@@ -32,6 +32,7 @@ func recvCommand() *cobra.Command {
 	cmd.Flags().StringVarP(&outDir, "out", "o", ".", "directory to receive into")
 	cmd.Flags().BoolVar(&disableClipboard, "disable-clipboard", false, "do not copy received text to the system clipboard")
 	cmd.Flags().BoolVarP(&serveMode, "serve", "s", false, "start an HTTP upload server on port 8075 instead of waiting for a code: any browser can upload (files and folders) into --out without confirming")
+	cmd.Flags().StringVarP(&uploadToken, "token", "t", "", "token required by the upload server (-s); a random 8-character one is generated and printed when omitted")
 
 	cmd.ValidArgsFunction = recvCodeCompletion
 

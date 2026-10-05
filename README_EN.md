@@ -70,6 +70,7 @@ Flags:
   -h, --help            help for receive
       --hide-progress   suppress progress-bar display
   -s, --serve           start an HTTP upload server (port 8075) instead of waiting for a code
+  -t, --token string    token the upload server requires; a random 8-character one is generated and printed when omitted
   -v, --verify          display verification string (and wait for approval)
 
 Global Flags:
@@ -86,17 +87,22 @@ install on the sending side:
 ```
 $ bsf receive -s
 Upload server (no install needed on the sender side, just a browser):
-  http://localhost:8075
-  http://192.168.31.178:8075
+  http://localhost:8075/?t=7wz54fnv
+  http://192.168.31.178:8075/?t=7wz54fnv
+Upload token: 7wz54fnv (also accepted as the X-Upload-Token header)
 ```
 
+- a token keeps strangers out: set it with `-t`, or let bsf mint a
+  random 8-character one (confusable 0/O, 1/l/I excluded) and print
+  it — the printed URLs already carry `?t=<token>`; a page opened
+  without one asks for it first
 - single files, multiple files, and whole folders (folder picker, or
   drag a directory onto the page)
 - saves into the current directory (`-o` to change it) without asking
 - name clashes are auto-renamed: `a.txt` → `a_1.txt` → `a_2.txt` …
   (compound extensions stay intact: `a.tar.gz` → `a_1.tar.gz`)
 - also works from the command line:
-  `curl --data-binary @file.txt 'http://<ip>:8075/upload?name=file.txt'`
+  `curl --data-binary @file.txt 'http://<ip>:8075/upload?name=file.txt&t=<token>'`
 - upload paths are sanitized; absolute paths and `..` are rejected
 
 ### UDP hole punching (P2P over QUIC)
