@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"os"
+	"regexp"
 	"strings"
 
 	"github.com/dwdcth/bsf/wordlist"
@@ -70,6 +71,19 @@ PowerShell:
 	}
 
 	return cmd
+}
+
+// rootValidArgs completes the bare form's two shorthands: while the
+// prefix still looks like a wormhole code (a nameplate and typed words)
+// complete codes as before; anything else falls back to the shell's own
+// file completion, matching "bsf FILE" for sending.
+var codePrefixRegexp = regexp.MustCompile(`^[0-9]+(-[a-zA-Z0-9]*)*$`)
+
+func rootValidArgs(cmd *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
+	if codePrefixRegexp.MatchString(toComplete) {
+		return recvCodeCompletion(cmd, args, toComplete)
+	}
+	return nil, cobra.ShellCompDirectiveDefault
 }
 
 func recvCodeCompletion(cmd *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {

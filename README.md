@@ -42,6 +42,13 @@ bsf send --text "你好"
 echo hello | bsf send --text -
 ```
 
+发送也可以省略子命令：直接把已存在的文件或目录路径（或 `--text`）交给 `bsf` 即可，等价于 `bsf send`，`--relay`、`--qr` 等发送选项在这种形式下同样可用：
+
+```
+bsf file.txt
+bsf --text "你好"
+```
+
 接收端把口令码直接作为参数即可（等价于 `bsf receive CODE`），也可以运行 `bsf receive` 后按提示输入：
 
 ```

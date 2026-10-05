@@ -53,29 +53,7 @@ func sendCommand() *cobra.Command {
 	cmd := cobra.Command{
 		Use:   "send [WHAT]",
 		Short: "Send a text message, file, or directory...",
-		Run: func(cmd *cobra.Command, args []string) {
-			if len(args) == 0 {
-				sendText()
-				return
-			} else if len(args) > 1 {
-				bail("Too many arguments")
-			}
-
-			stat, err := os.Stat(args[0])
-			if err != nil {
-				bail("Failed to read %s: %s", args[0], err)
-			}
-
-			parallelExplicit = cmd.Flags().Changed("parallel")
-
-			if stat.IsDir() {
-				sendDir(args[0])
-				return
-			} else {
-				sendFile(args[0])
-				return
-			}
-		},
+		Run:   func(cmd *cobra.Command, args []string) { sendAction(cmd, args) },
 	}
 
 	cmd.Flags().BoolVarP(&verify, "verify", "v", false, "display verification string (and wait for approval)")
@@ -89,6 +67,33 @@ func sendCommand() *cobra.Command {
 	cmd.Flags().IntVar(&parallelStreams, "parallel", 4, "number of parallel transit streams for file transfers (bsf receivers only)")
 
 	return &cmd
+}
+
+// sendAction is the body of both "bsf send WHAT" and the bare
+// "bsf WHAT" form: no argument sends (or prompts for) text, an existing
+// path is sent as a file or directory.
+func sendAction(cmd *cobra.Command, args []string) {
+	if len(args) == 0 {
+		sendText()
+		return
+	} else if len(args) > 1 {
+		bail("Too many arguments")
+	}
+
+	stat, err := os.Stat(args[0])
+	if err != nil {
+		bail("Failed to read %s: %s", args[0], err)
+	}
+
+	parallelExplicit = cmd.Flags().Changed("parallel")
+
+	if stat.IsDir() {
+		sendDir(args[0])
+		return
+	} else {
+		sendFile(args[0])
+		return
+	}
 }
 
 func newClient() wormhole.Client {

@@ -23,6 +23,13 @@ As a shortcut, a wormhole code can be passed directly to the `bsf` command, whic
 $ bsf 3-cinnamon-chalk-wizard
 ```
 
+Likewise, passing an existing file or directory path is shorthand for `bsf send WHAT` — no subcommand needed (send's flags such as `--relay` or `--qr` work in this form too):
+
+```
+$ bsf photo.jpg
+$ bsf --text "hello there"
+```
+
 When sending, the wormhole code is automatically copied to the system clipboard (using `pbcopy`, `clip`, `wl-copy`, or `xclip`/`xsel` where available), so it can be pasted directly on the other computer. If no clipboard helper is available (for example over a plain ssh session without X forwarding), it falls back to the OSC 52 terminal escape sequence, which asks the terminal emulator itself to copy the code — this works over plain ssh with terminals like kitty, iTerm2, Windows Terminal, WezTerm, alacritty, or foot (inside tmux, `set-clipboard` must be enabled). Use `--disable-clipboard` to turn this off.
 
 ```

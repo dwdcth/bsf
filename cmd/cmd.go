@@ -17,8 +17,15 @@ func looksLikeRecvCode(s string) bool {
 	return recvCodeRegexp.MatchString(s)
 }
 
+// existingPath reports whether s names an existing file or directory —
+// the bare form's shorthand for sending it.
+func existingPath(s string) bool {
+	_, err := os.Stat(s)
+	return err == nil
+}
+
 var rootCmd = &cobra.Command{
-	Use:     "bsf [CODE]",
+	Use:     "bsf [CODE|FILE]",
 	Short:   "Create a wormhole and transfer files through it.",
 	Version: version.AgentVersion,
 	Long: `Create a (magic) Wormhole and communicate through it.
@@ -27,17 +34,22 @@ var rootCmd = &cobra.Command{
   places at the same time. Wormholes are secure against anyone who doesn't
   use the same code.
 
-  Passing a CODE directly is shorthand for "receive CODE".`,
+  Passing a CODE directly is shorthand for "receive CODE"; passing an
+  existing file or directory path (or --text) is shorthand for "send".`,
 	Args: func(cmd *cobra.Command, args []string) error {
-		if len(args) == 0 || looksLikeRecvCode(args[0]) {
+		if len(args) == 0 || looksLikeRecvCode(args[0]) || existingPath(args[0]) {
 			return nil
 		}
 		return fmt.Errorf("unknown command %q for %q", args[0], cmd.CommandPath())
 	},
-	ValidArgsFunction: recvCodeCompletion,
+	ValidArgsFunction: rootValidArgs,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		if len(args) > 0 && looksLikeRecvCode(args[0]) {
 			recvAction(cmd, args)
+			return nil
+		}
+		if (len(args) > 0 && existingPath(args[0])) || sendTextFlag != "" {
+			sendAction(cmd, args)
 			return nil
 		}
 		return cmd.Help()
@@ -75,6 +87,14 @@ func Execute() error {
 	rootCmd.Flags().BoolVarP(&acceptAll, "yes", "y", false, "accept the transfer without prompting and overwrite existing files")
 	rootCmd.Flags().StringVarP(&outDir, "out", "o", ".", "directory to receive into")
 	rootCmd.Flags().BoolVar(&disableClipboard, "disable-clipboard", false, "do not copy received text to the system clipboard")
+	// send's own flags, so the bare "bsf FILE" / "bsf --text MSG" forms
+	// accept them too (the flags shared with receive — verify,
+	// hide-progress, parallel — are already registered above)
+	rootCmd.Flags().IntVarP(&codeLen, "code-length", "c", 0, "length of code (in bytes/words)")
+	rootCmd.Flags().StringVar(&codeFlag, "code", "", "human-generated code phrase")
+	rootCmd.Flags().StringVar(&sendTextFlag, "text", "", "text message to send, instead of a file.\nUse '-' to read from stdin")
+	rootCmd.Flags().BoolVar(&showQRCode, "qr", false, "display code as QR code (experimental)")
+	rootCmd.Flags().BoolVar(&relayMode, "relay", false, "also register the code on the relay (--relay-url or the public one) so receivers outside the local network can connect")
 	// persistent so both the bare "bsf CODE" form and the send/receive
 	// subcommands accept them
 	rootCmd.PersistentFlags().BoolVar(&iceEnabled, "ice", true, "attempt UDP hole punching (p2p over QUIC) before falling back to a relay")
